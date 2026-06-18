@@ -1,13 +1,46 @@
 diff --git a/node_modules/nodejs-mobile-react-native/android/build.gradle b/node_modules/nodejs-mobile-react-native/android/build.gradle
-index 14be607..83bf23c 100644
+index 14be607..d2a1ab8 100644
 --- a/node_modules/nodejs-mobile-react-native/android/build.gradle
 +++ b/node_modules/nodejs-mobile-react-native/android/build.gradle
-@@ -402,7 +402,7 @@ if ("1".equals(shouldRebuildNativeModules)) {
+@@ -351,7 +351,7 @@ if ("1".equals(shouldRebuildNativeModules)) {
+                         into "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/"
+                     }
+                 }
+-                exec {
++                project.exec {
+                     workingDir "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/"
+                     commandLine nodeCommandName, "${project.projectDir}/../scripts/patch-package.js", "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/node_modules/"
+                 }
+@@ -388,7 +388,7 @@ if ("1".equals(shouldRebuildNativeModules)) {
+                         from "${dotNode.getAbsoluteFile()}"
+                         into "${moduleRoot}/build/Release/"
+                     }
+-                    exec {
++                    project.exec {
+                         workingDir moduleRoot
+                         commandLine 'sed', '-i.bak', 's/"install"/"dontinstall"/g; s/"rebuild"/"dontrebuild"/g; s/"gypfile"/"dontgypfile"/g', 'package.json'
+                     }
+@@ -401,16 +401,14 @@ if ("1".equals(shouldRebuildNativeModules)) {
+         task "BuildNpmModules${abi_name}" (type:Exec) {
              dependsOn "DetectCorrectPrebuilds${abi_name}"
              description = "Building native modules for ${abi_name}."
-             def nodeVersionStdout = new ByteArrayOutputStream()
+-            def nodeVersionStdout = new ByteArrayOutputStream()
 -            def nodeVersionResult = exec {
-+            def nodeVersionResult = project.exec {
-                 commandLine 'node', '-p', 'process.versions.node.split(".")[0]'
-                 standardOutput = nodeVersionStdout
+-                commandLine 'node', '-p', 'process.versions.node.split(".")[0]'
+-                standardOutput = nodeVersionStdout
++            def p = ['node', '-p', 'process.versions.node.split(".")[0]'].execute()
++            p.waitFor()
++            if (p.exitValue() != 0) {
++                throw new GradleException("Failed to get node version: " + p.err.text)
              }
+-            if (nodeVersionResult.exitValue != 0) {
+-                throw new GradleException("Failed to get node version: ${nodeVersionResult.errorOutput}")
+-            }
+-            if (nodeVersionStdout.toString().trim() != "${_nodeVersionRequired}") {
+-                throw new GradleException("nodejs-mobile-react-native requires Node.js version ${_nodeVersionRequired}, but found ${nodeVersionStdout.toString().trim()}")
++            def nodeVersionStdoutStr = p.text.trim()
++            if (nodeVersionStdoutStr != "${_nodeVersionRequired}") {
++                throw new GradleException("nodejs-mobile-react-native requires Node.js version ${_nodeVersionRequired}, but found ${nodeVersionStdoutStr}")
+             }
+             inputs.file "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/copy.timestamp"
+             outputs.dir "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/"
