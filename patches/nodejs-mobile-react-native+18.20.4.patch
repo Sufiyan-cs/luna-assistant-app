@@ -1,0 +1,13 @@
+diff --git a/node_modules/nodejs-mobile-react-native/android/build.gradle b/node_modules/nodejs-mobile-react-native/android/build.gradle
+index 14be607..83bf23c 100644
+--- a/node_modules/nodejs-mobile-react-native/android/build.gradle
++++ b/node_modules/nodejs-mobile-react-native/android/build.gradle
+@@ -402,7 +402,7 @@ if ("1".equals(shouldRebuildNativeModules)) {
+             dependsOn "DetectCorrectPrebuilds${abi_name}"
+             description = "Building native modules for ${abi_name}."
+             def nodeVersionStdout = new ByteArrayOutputStream()
+-            def nodeVersionResult = exec {
++            def nodeVersionResult = project.exec {
+                 commandLine 'node', '-p', 'process.versions.node.split(".")[0]'
+                 standardOutput = nodeVersionStdout
+             }
