@@ -1,26 +1,43 @@
 diff --git a/node_modules/nodejs-mobile-react-native/android/build.gradle b/node_modules/nodejs-mobile-react-native/android/build.gradle
-index 14be607..ecc8859 100644
+index 14be607..8a39603 100644
 --- a/node_modules/nodejs-mobile-react-native/android/build.gradle
 +++ b/node_modules/nodejs-mobile-react-native/android/build.gradle
-@@ -351,7 +351,7 @@ if ("1".equals(shouldRebuildNativeModules)) {
+@@ -351,10 +351,13 @@ if ("1".equals(shouldRebuildNativeModules)) {
                          into "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/"
                      }
                  }
 -                exec {
-+                project.exec {
-                     workingDir "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/"
-                     commandLine nodeCommandName, "${project.projectDir}/../scripts/patch-package.js", "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/node_modules/"
-                 }
-@@ -388,7 +388,7 @@ if ("1".equals(shouldRebuildNativeModules)) {
+-                    workingDir "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/"
+-                    commandLine nodeCommandName, "${project.projectDir}/../scripts/patch-package.js", "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/node_modules/"
+-                }
++                def patchProc = new ProcessBuilder(nodeCommandName, "${project.projectDir}/../scripts/patch-package.js", "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/node_modules/")
++                    .directory(new File("${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/"))
++                    .redirectErrorStream(true)
++                    .start()
++                patchProc.inputStream.eachLine { println it }
++                def patchExit = patchProc.waitFor()
++                if (patchExit != 0) { throw new GradleException("patch-package.js failed with exit code ${patchExit}") }
+                 new File("${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/copy.timestamp").text = "${new Date().format('yyyy-MM-dd HH:mm:ss')}"
+             }
+         }
+@@ -388,10 +391,12 @@ if ("1".equals(shouldRebuildNativeModules)) {
                          from "${dotNode.getAbsoluteFile()}"
                          into "${moduleRoot}/build/Release/"
                      }
 -                    exec {
-+                    project.exec {
-                         workingDir moduleRoot
-                         commandLine 'sed', '-i.bak', 's/"install"/"dontinstall"/g; s/"rebuild"/"dontrebuild"/g; s/"gypfile"/"dontgypfile"/g', 'package.json'
-                     }
-@@ -401,17 +401,8 @@ if ("1".equals(shouldRebuildNativeModules)) {
+-                        workingDir moduleRoot
+-                        commandLine 'sed', '-i.bak', 's/"install"/"dontinstall"/g; s/"rebuild"/"dontrebuild"/g; s/"gypfile"/"dontgypfile"/g', 'package.json'
+-                    }
++                    def sedProc = new ProcessBuilder('sed', '-i.bak', 's/"install"/"dontinstall"/g; s/"rebuild"/"dontrebuild"/g; s/"gypfile"/"dontgypfile"/g', 'package.json')
++                        .directory(moduleRoot)
++                        .redirectErrorStream(true)
++                        .start()
++                    sedProc.inputStream.eachLine { println it }
++                    sedProc.waitFor()
+                     delete "${moduleRoot}/binding.gyp"
+                     delete "${moduleRoot}/prebuilds"
+                 }
+@@ -401,17 +406,8 @@ if ("1".equals(shouldRebuildNativeModules)) {
          task "BuildNpmModules${abi_name}" (type:Exec) {
              dependsOn "DetectCorrectPrebuilds${abi_name}"
              description = "Building native modules for ${abi_name}."
