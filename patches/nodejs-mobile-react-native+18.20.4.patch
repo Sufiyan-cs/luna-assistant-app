@@ -1,5 +1,5 @@
 diff --git a/node_modules/nodejs-mobile-react-native/android/build.gradle b/node_modules/nodejs-mobile-react-native/android/build.gradle
-index 14be607..d2a1ab8 100644
+index 14be607..ecc8859 100644
 --- a/node_modules/nodejs-mobile-react-native/android/build.gradle
 +++ b/node_modules/nodejs-mobile-react-native/android/build.gradle
 @@ -351,7 +351,7 @@ if ("1".equals(shouldRebuildNativeModules)) {
@@ -20,7 +20,7 @@ index 14be607..d2a1ab8 100644
                          workingDir moduleRoot
                          commandLine 'sed', '-i.bak', 's/"install"/"dontinstall"/g; s/"rebuild"/"dontrebuild"/g; s/"gypfile"/"dontgypfile"/g', 'package.json'
                      }
-@@ -401,16 +401,14 @@ if ("1".equals(shouldRebuildNativeModules)) {
+@@ -401,17 +401,8 @@ if ("1".equals(shouldRebuildNativeModules)) {
          task "BuildNpmModules${abi_name}" (type:Exec) {
              dependsOn "DetectCorrectPrebuilds${abi_name}"
              description = "Building native modules for ${abi_name}."
@@ -28,19 +28,15 @@ index 14be607..d2a1ab8 100644
 -            def nodeVersionResult = exec {
 -                commandLine 'node', '-p', 'process.versions.node.split(".")[0]'
 -                standardOutput = nodeVersionStdout
-+            def p = ['node', '-p', 'process.versions.node.split(".")[0]'].execute()
-+            p.waitFor()
-+            if (p.exitValue() != 0) {
-+                throw new GradleException("Failed to get node version: " + p.err.text)
-             }
+-            }
 -            if (nodeVersionResult.exitValue != 0) {
 -                throw new GradleException("Failed to get node version: ${nodeVersionResult.errorOutput}")
 -            }
 -            if (nodeVersionStdout.toString().trim() != "${_nodeVersionRequired}") {
 -                throw new GradleException("nodejs-mobile-react-native requires Node.js version ${_nodeVersionRequired}, but found ${nodeVersionStdout.toString().trim()}")
-+            def nodeVersionStdoutStr = p.text.trim()
-+            if (nodeVersionStdoutStr != "${_nodeVersionRequired}") {
-+                throw new GradleException("nodejs-mobile-react-native requires Node.js version ${_nodeVersionRequired}, but found ${nodeVersionStdoutStr}")
-             }
+-            }
++            def p = ['node', '-v'].execute()
++            p.waitFor()
              inputs.file "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/copy.timestamp"
              outputs.dir "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/"
+             workingDir "${rootProject.buildDir}/nodejs-native-assets-temp-build/nodejs-native-assets-${abi_name}/nodejs-project/"
