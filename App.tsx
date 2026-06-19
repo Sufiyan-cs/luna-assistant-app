@@ -90,9 +90,8 @@ function LunaApp() {
   };
 
   useEffect(() => {
-    // Load settings first, then init Node.js
-    const init = async () => {
-      // Load saved settings
+    // Only load settings on startup - do NOT start Node.js yet
+    const loadSavedSettings = async () => {
       try {
         const key = await AsyncStorage.getItem('nvidiaApiKey');
         const prompt = await AsyncStorage.getItem('systemPrompt');
@@ -102,72 +101,16 @@ function LunaApp() {
         if (prompt) setSystemPrompt(prompt);
         if (excluded) setExcludedNumbers(excluded);
         
-        addLog('Settings loaded from storage.');
+        addLog('Settings loaded.');
+        addLog('Tap START BOT when ready.');
+        setStatus('Ready - Tap Start');
       } catch (e) {
         addLog('Could not load saved settings, using defaults.');
-      }
-
-      // Initialize Node.js engine
-      try {
-        addLog('Loading nodejs-mobile module...');
-        
-        // The module uses module.exports (CommonJS), NOT export default.
-        // require() returns the object directly, no .default needed.
-        const nodejs = require('nodejs-mobile-react-native');
-        
-        if (!nodejs || !nodejs.start) {
-          throw new Error(`Module loaded but missing .start method. Keys: ${Object.keys(nodejs || {}).join(', ')}`);
-        }
-        
-        nodejsRef = nodejs;
-        addLog('Module loaded. Starting Node.js engine...');
-        
-        nodejs.start('main.js');
-        addLog('Node.js engine started successfully.');
-        
-        // Listen for messages from the backend
-        nodejs.channel.addListener('message', (msg: any) => {
-          try {
-            if (msg.type === 'backend_ready') {
-              addLog('Node.js Backend is ready.');
-              setNodeReady(true);
-              setStatus('Offline - Ready to connect');
-            } else if (msg.type === 'log') {
-              addLog(msg.data);
-            } else if (msg.type === 'qr') {
-              setQrCode(msg.data);
-              setStatus('Scan QR Code');
-              addLog('QR code received. Open WhatsApp > Linked Devices > Scan.');
-            } else if (msg.type === 'status') {
-              if (msg.data === 'connected') {
-                setStatus('Connected / Online ✅');
-                setQrCode('');
-                addLog('WhatsApp connected! Luna is now active.');
-              } else if (msg.data === 'disconnected') {
-                setStatus('Disconnected');
-                addLog('WhatsApp disconnected.');
-              } else if (msg.data === 'logged_out') {
-                setStatus('Logged Out');
-                setQrCode('');
-                addLog('Logged out from WhatsApp. Tap START BOT to reconnect.');
-              }
-            }
-          } catch (listenerErr: any) {
-            addLog(`Listener error: ${listenerErr.message}`);
-          }
-        });
-
-        setStatus('Offline - Ready to connect');
-      } catch (e: any) {
-        const errorMsg = `Node.js init failed: ${e.message}`;
-        addLog(`FATAL: ${errorMsg}`);
-        addLog(`Stack: ${e.stack || 'N/A'}`);
-        setStatus('Engine Error - See Logs');
+        setStatus('Ready - Tap Start');
       }
     };
 
-    // Small delay to let the UI render first
-    setTimeout(init, 300);
+    loadSavedSettings();
   }, []);
 
   const sendConfigToBackend = (key: string, prompt: string, excluded: string) => {
@@ -199,20 +142,84 @@ function LunaApp() {
     }
   };
 
-  const startBot = () => {
-    if (!nodejsRef) {
-      addLog('Error: Node.js engine not loaded. Check Logs tab.');
-      return;
+  const initNodeEngine = () => {
+    if (nodejsRef) return true; // Already initialized
+    
+    try {
+      addLog('Loading nodejs-mobile module...');
+      const nodejs = require('nodejs-mobile-react-native');
+      
+      if (!nodejs || !nodejs.start) {
+        addLog(`ERROR: Module missing .start. Keys: ${Object.keys(nodejs || {}).join(', ')}`);
+        return false;
+      }
+      
+      // Set up message listener BEFORE starting the engine
+      nodejs.channel.addListener('message', (msg: any) => {
+        try {
+          if (msg.type === 'backend_ready') {
+            addLog('Node.js Backend is ready.');
+            setNodeReady(true);
+          } else if (msg.type === 'log') {
+            addLog(msg.data);
+          } else if (msg.type === 'qr') {
+            setQrCode(msg.data);
+            setStatus('Scan QR Code');
+            addLog('QR code received. Open WhatsApp > Linked Devices > Scan.');
+          } else if (msg.type === 'status') {
+            if (msg.data === 'connected') {
+              setStatus('Connected / Online ✅');
+              setQrCode('');
+              addLog('WhatsApp connected! Luna is now active.');
+            } else if (msg.data === 'disconnected') {
+              setStatus('Disconnected');
+              addLog('WhatsApp disconnected.');
+            } else if (msg.data === 'logged_out') {
+              setStatus('Logged Out');
+              setQrCode('');
+              addLog('Logged out. Tap START BOT to reconnect.');
+            }
+          }
+        } catch (err: any) {
+          addLog(`Listener error: ${err.message}`);
+        }
+      });
+      
+      addLog('Starting Node.js engine...');
+      nodejs.start('main.js');
+      nodejsRef = nodejs;
+      addLog('Node.js engine started.');
+      return true;
+    } catch (e: any) {
+      addLog(`FATAL: ${e.message}`);
+      addLog(`Stack: ${e.stack || 'N/A'}`);
+      setStatus('Engine Error - See Logs');
+      return false;
     }
+  };
+
+  const startBot = () => {
     if (!nvidiaApiKey) {
       addLog('Please set your NVIDIA API Key in Settings first.');
       setActiveTab('settings');
       return;
     }
+    
+    setStatus('Starting...');
+    
+    // Initialize Node.js engine if not already running
+    if (!initNodeEngine()) {
+      setStatus('Engine Error - See Logs');
+      return;
+    }
+    
     try {
-      // Send latest config before starting
-      sendConfigToBackend(nvidiaApiKey, systemPrompt, excludedNumbers);
-      setStatus('Starting...');
+      // Send config then start command
+      const excludeArr = excludedNumbers.split(',').map(n => n.trim()).filter(n => n);
+      nodejsRef.channel.send({
+        type: 'config',
+        data: { nvidiaApiKey, systemPrompt, excludedNumbers: excludeArr },
+      });
       nodejsRef.channel.send({ type: 'start' });
       addLog('Bot start command sent.');
     } catch (e: any) {
