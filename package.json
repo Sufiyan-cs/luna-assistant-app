@@ -13,12 +13,12 @@
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native/new-app-screen": "0.86.0",
-    "nodejs-mobile-react-native": "^18.20.4",
     "react": "19.2.3",
     "react-native": "0.86.0",
     "react-native-qrcode-svg": "^6.3.21",
     "react-native-safe-area-context": "^5.5.2",
-    "react-native-svg": "^15.15.5"
+    "react-native-svg": "^15.15.5",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

@@ -30,11 +30,6 @@ jobs:
       - name: Install Root Dependencies
         run: npm install
 
-      - name: Install Node.js Backend Dependencies
-        run: |
-          cd nodejs-assets/nodejs-project
-          npm install
-
       - name: Build Android Release APK
         run: |
           cd android
