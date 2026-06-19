@@ -14,6 +14,15 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import QRCode from 'react-native-qrcode-svg';
 import { io, Socket } from 'socket.io-client';
+import notifee, { AndroidImportance } from '@notifee/react-native';
+
+export interface Activity {
+  type: 'reply' | 'ignore' | 'voice' | 'system';
+  priority?: 'Low' | 'Medium' | 'High';
+  title: string;
+  message: string;
+  time: string;
+}
 
 // ---- Error Boundary ----
 interface ErrorBoundaryState { hasError: boolean; error: string; errorInfo: string; }
@@ -54,6 +63,8 @@ function LunaApp() {
   const [status, setStatus] = useState('Disconnected');
   const [logs, setLogs] = useState<string[]>([]);
   const [qrCode, setQrCode] = useState('');
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [isPaused, setIsPaused] = useState(false);
   
   // Settings
   const [backendUrl, setBackendUrl] = useState('');
@@ -63,11 +74,40 @@ function LunaApp() {
   
   const scrollViewRef = useRef<ScrollView>(null);
   const logsRef = useRef<string[]>([]);
+  const activitiesRef = useRef<Activity[]>([]);
 
   const addLog = (msg: string) => {
     const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
     logsRef.current = [...logsRef.current.slice(-99), entry];
     setLogs([...logsRef.current]);
+  };
+
+  const addActivity = (act: Activity) => {
+    activitiesRef.current = [act, ...activitiesRef.current].slice(0, 50);
+    setActivities([...activitiesRef.current]);
+  };
+
+  const displayNotification = async (title: string, body: string) => {
+    try {
+      await notifee.requestPermission();
+      const channelId = await notifee.createChannel({
+        id: 'luna_alerts',
+        name: 'Luna Alerts',
+        importance: AndroidImportance.HIGH,
+      });
+
+      await notifee.displayNotification({
+        title,
+        body,
+        android: {
+          channelId,
+          smallIcon: 'ic_launcher',
+          pressAction: { id: 'default' },
+        },
+      });
+    } catch (e) {
+      addLog(`Notification error: ${(e as Error).message}`);
+    }
   };
 
   useEffect(() => {
@@ -163,15 +203,23 @@ function LunaApp() {
         setQrCode('');
       }
     });
+
+    socket.on('activity', (act: Activity) => {
+      addActivity(act);
+      if (act.priority === 'High' || act.type === 'voice') {
+        displayNotification(act.title, act.message);
+      }
+    });
   };
 
-  const sendConfig = (socket: Socket | null, key: string, prompt: string, excluded: string) => {
+  const sendConfig = (socket: Socket | null, key: string, prompt: string, excluded: string, pausedState: boolean = isPaused) => {
     if (!socket || !socket.connected) return;
     const excludeArr = excluded.split(',').map(n => n.trim()).filter(n => n);
     socket.emit('config', {
       nvidiaApiKey: key,
       systemPrompt: prompt,
       excludedNumbers: excludeArr,
+      isPaused: pausedState
     });
   };
 
@@ -216,7 +264,7 @@ function LunaApp() {
       </View>
 
       <View style={styles.tabs}>
-        {['dashboard', 'settings', 'logs'].map(tab => (
+        {['dashboard', 'inbox', 'settings', 'logs'].map(tab => (
           <TouchableOpacity key={tab} style={[styles.tab, activeTab === tab && styles.activeTab]} onPress={() => setActiveTab(tab)}>
             <Text style={[styles.tabText, activeTab === tab && { color: '#075E54' }]}>
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
@@ -237,6 +285,16 @@ function LunaApp() {
               <View style={styles.centerContainer}>
                 <Text style={styles.welcomeText}>Welcome to Luna</Text>
                 <Text style={styles.infoText}>Controlling Remote Backend</Text>
+                <TouchableOpacity 
+                  style={[styles.primaryButton, { marginTop: 20, backgroundColor: isPaused ? '#4CAF50' : '#FF9800' }]} 
+                  onPress={() => {
+                    const newState = !isPaused;
+                    setIsPaused(newState);
+                    socketRef?.emit(newState ? 'pause_bot' : 'resume_bot');
+                  }}
+                >
+                  <Text style={styles.buttonText}>{isPaused ? 'RESUME BOT' : 'PAUSE BOT'}</Text>
+                </TouchableOpacity>
               </View>
             )}
             
@@ -250,6 +308,32 @@ function LunaApp() {
             </View>
           </View>
         )}
+
+        {activeTab === 'inbox' && (
+          <ScrollView style={styles.logs} ref={scrollViewRef}>
+            {activities.length === 0 ? (
+              <Text style={{color: '#999', textAlign: 'center', marginTop: 20}}>No recent activity.</Text>
+            ) : (
+              activities.map((act, i) => (
+                <View key={i} style={{
+                  backgroundColor: act.priority === 'High' ? '#ffebee' : act.type === 'ignore' ? '#f5f5f5' : '#e8f5e9',
+                  padding: 12,
+                  borderRadius: 8,
+                  marginBottom: 8,
+                  borderLeftWidth: 4,
+                  borderLeftColor: act.priority === 'High' ? '#f44336' : act.type === 'ignore' ? '#9e9e9e' : '#4CAF50'
+                }}>
+                  <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+                    <Text style={{fontWeight: 'bold', color: '#333'}}>{act.title}</Text>
+                    <Text style={{color: '#666', fontSize: 12}}>{act.time}</Text>
+                  </View>
+                  <Text style={{color: '#444', marginTop: 4}}>{act.message}</Text>
+                </View>
+              ))
+            )}
+          </ScrollView>
+        )}
+
 
         {activeTab === 'settings' && (
           <ScrollView style={styles.settings} keyboardShouldPersistTaps="handled">

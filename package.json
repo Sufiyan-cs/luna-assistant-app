@@ -11,6 +11,7 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native/new-app-screen": "0.86.0",
     "react": "19.2.3",

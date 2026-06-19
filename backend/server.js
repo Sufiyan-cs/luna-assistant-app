@@ -27,7 +27,8 @@ let startTime = 0;
 let config = {
     systemPrompt: '',
     excludedNumbers: [],
-    nvidiaApiKey: ''
+    nvidiaApiKey: '',
+    isPaused: false
 };
 
 const PORT = process.env.PORT || 3000;
@@ -50,6 +51,7 @@ io.on('connection', (socket) => {
                 systemPrompt: data.systemPrompt || config.systemPrompt,
                 excludedNumbers: data.excludedNumbers || config.excludedNumbers,
                 nvidiaApiKey: data.nvidiaApiKey || config.nvidiaApiKey,
+                isPaused: data.isPaused !== undefined ? data.isPaused : config.isPaused
             };
             
             if (config.nvidiaApiKey) {
@@ -66,6 +68,18 @@ io.on('connection', (socket) => {
             }
             log('Config updated from app.');
         }
+    });
+
+    socket.on('pause_bot', () => {
+        config.isPaused = true;
+        log('Luna is now PAUSED. She will ignore all messages.');
+        socket.emit('activity', { type: 'system', message: 'Bot paused.' });
+    });
+
+    socket.on('resume_bot', () => {
+        config.isPaused = false;
+        log('Luna is now RESUMED. She will reply to messages.');
+        socket.emit('activity', { type: 'system', message: 'Bot resumed.' });
     });
 
     socket.on('start', async () => {
@@ -135,17 +149,35 @@ io.on('connection', (socket) => {
                         
                         const jid = msg.key.remoteJid;
                         if (!jid) return;
-                        
-                        const text = msg.message.conversation || (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) || '';
-                        if (!text) return;
-                        
                         const num = jid.split('@')[0];
+
                         if (config.excludedNumbers.indexOf(num) !== -1) {
                             log('Skipped excluded: ' + num);
                             return;
                         }
+
+                        // Handle Voice Messages
+                        if (msg.message.audioMessage) {
+                            log(`Voice message received from ${num}`);
+                            socket.emit('activity', {
+                                type: 'voice',
+                                priority: 'Medium',
+                                title: `Voice Message from ${num}`,
+                                message: 'A voice note was received. Luna ignored it as she cannot listen to audio yet.',
+                                time: new Date().toLocaleTimeString()
+                            });
+                            return; // Do not process audio
+                        }
+                        
+                        const text = msg.message.conversation || (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) || '';
+                        if (!text) return;
                         
                         log('From ' + num + ': ' + text.substring(0, 50));
+
+                        if (config.isPaused) {
+                            log(`Ignored message from ${num} because bot is PAUSED.`);
+                            return;
+                        }
                         
                         if (!openai) {
                             log('No API key - cannot reply.');
@@ -153,11 +185,15 @@ io.on('connection', (socket) => {
                         }
                         
                         if (!chatHistories[jid]) {
-                            chatHistories[jid] = [{ role: 'system', content: config.systemPrompt }];
+                            chatHistories[jid] = [{ 
+                                role: 'system', 
+                                content: `${config.systemPrompt}\n\nCRITICAL INSTRUCTION: You MUST reply ONLY with a valid JSON object. Do NOT include markdown blocks like \`\`\`json. Your JSON must strictly follow this structure:\n{\n  "priority": "Low|Medium|High",\n  "action": "reply|ignore",\n  "replyText": "The message to send to the user (leave empty if ignoring)",\n  "summary": "A 1-sentence summary of what this conversation is about right now"\n}\n\nRULES:\n- Low priority (Spam/Promos): action must be "ignore".\n- Medium priority (Casual/Normal): action must be "reply".\n- High priority (Emergency/Urgent): action must be "reply" (or ignore if inappropriate to reply).`
+                            }];
                         }
                         chatHistories[jid].push({ role: 'user', content: text });
                         
                         if (chatHistories[jid].length > 15) {
+                            // Keep system prompt + last 14 messages
                             chatHistories[jid] = [chatHistories[jid][0]].concat(chatHistories[jid].slice(-14));
                         }
                         
@@ -166,19 +202,47 @@ io.on('connection', (socket) => {
                         const completion = await openai.chat.completions.create({
                             model: 'meta/llama-3.3-70b-instruct',
                             messages: chatHistories[jid],
-                            temperature: 0.7,
-                            max_tokens: 150,
+                            temperature: 0.1, // Lower temp for strict JSON
+                            max_tokens: 300,
                         });
                         
-                        const reply = completion.choices[0].message.content.trim();
-                        chatHistories[jid].push({ role: 'assistant', content: reply });
+                        const rawReply = completion.choices[0].message.content.trim();
                         
-                        const delay = Math.min(reply.length * 15, 1500);
-                        await new Promise(r => setTimeout(r, delay));
-                        
-                        try { await sock.sendPresenceUpdate('paused', jid); } catch(_) {}
-                        await sock.sendMessage(jid, { text: reply });
-                        log('Replied to ' + num + ': ' + reply.substring(0, 60));
+                        // Parse JSON
+                        let decision;
+                        try {
+                            // Attempt to strip any accidental markdown
+                            const cleanJson = rawReply.replace(/```json/g, '').replace(/```/g, '').trim();
+                            decision = JSON.parse(cleanJson);
+                        } catch (err) {
+                            log('Failed to parse LLM JSON: ' + err.message + '\nRaw: ' + rawReply);
+                            // Fallback
+                            decision = { action: 'reply', priority: 'Medium', replyText: "I'm sorry, I encountered an error processing your message. Sufiyan will get back to you later.", summary: "Error parsing LLM output." };
+                        }
+
+                        // Log activity to the App Inbox
+                        socket.emit('activity', {
+                            type: decision.action === 'reply' ? 'reply' : 'ignore',
+                            priority: decision.priority,
+                            title: `From ${num} (${decision.priority})`,
+                            message: decision.summary,
+                            time: new Date().toLocaleTimeString()
+                        });
+
+                        if (decision.action === 'reply' && decision.replyText) {
+                            // Store the reply in history
+                            chatHistories[jid].push({ role: 'assistant', content: decision.replyText });
+                            
+                            const delay = Math.min(decision.replyText.length * 15, 1500);
+                            await new Promise(r => setTimeout(r, delay));
+                            
+                            try { await sock.sendPresenceUpdate('paused', jid); } catch(_) {}
+                            await sock.sendMessage(jid, { text: decision.replyText });
+                            log('Replied to ' + num + ': ' + decision.replyText.substring(0, 60));
+                        } else {
+                            log(`Ignored message from ${num} based on LLM decision (Priority: ${decision.priority}).`);
+                            // We don't add ignored text to the assistant history because she didn't say anything
+                        }
                         
                     } catch (e) {
                         log('Message error: ' + e.message);
