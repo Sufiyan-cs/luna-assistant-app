@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from 'react';
 import {
   SafeAreaView,
   ScrollView,
@@ -11,18 +11,64 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import nodejs from 'nodejs-mobile-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import QRCode from 'react-native-qrcode-svg';
 
+// ---- Error Boundary to catch crashes and display them on-screen ----
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: string;
+  errorInfo: string;
+}
+
+class ErrorBoundary extends Component<{children: ReactNode}, ErrorBoundaryState> {
+  constructor(props: {children: ReactNode}) {
+    super(props);
+    this.state = { hasError: false, error: '', errorInfo: '' };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error: error.toString() };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    this.setState({
+      error: error.toString(),
+      errorInfo: errorInfo.componentStack || '',
+    });
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#1a0000', padding: 20 }}>
+          <Text style={{ color: '#ff4444', fontSize: 20, fontWeight: 'bold', marginBottom: 10 }}>
+            ⚠ App Crashed - Error Details:
+          </Text>
+          <ScrollView>
+            <Text style={{ color: '#ff8888', fontSize: 14, fontFamily: 'monospace' }}>
+              {this.state.error}
+            </Text>
+            <Text style={{ color: '#ffaaaa', fontSize: 12, fontFamily: 'monospace', marginTop: 10 }}>
+              {this.state.errorInfo}
+            </Text>
+          </ScrollView>
+        </SafeAreaView>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const DEFAULT_PROMPT = "You are Luna, the personal and highly capable WhatsApp assistant to Sufiyan.\nYour role is to manage his incoming messages, schedule, and communications like a real human assistant.\n\nPERSONALITY TRAITS:\n- Warm, polite, and deeply professional.\n- You speak conversationally, exactly like a human assistant texting on WhatsApp. No robotic formatting.\n- Keep your replies relatively short and natural, suitable for text messaging.\n- You are highly protective of Sufiyan's time.\n\nKEY RULES:\n1. Always introduce yourself gracefully if the person seems to not know they are speaking to an assistant.\n2. If it's a casual greeting, respond warmly and ask how you can help on Sufiyan's behalf.\n3. If someone asks for a meeting or favor, politely let them know you will pass the message to Sufiyan.\n4. Never make up facts about Sufiyan's schedule. Instead, say you need to check with him.\n5. Do not use robotic phrases like 'As an AI language model'. You are strictly Luna, the human assistant.";
 
-export default function App() {
+function LunaApp() {
   const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, settings, logs
   
-  const [status, setStatus] = useState('Offline');
+  const [status, setStatus] = useState('Initializing...');
   const [qrCode, setQrCode] = useState('');
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<string[]>(['[App] Starting up...']);
+  const [nodeLoaded, setNodeLoaded] = useState(false);
   
   // Settings
   const [nvidiaApiKey, setNvidiaApiKey] = useState('');
@@ -34,35 +80,49 @@ export default function App() {
   useEffect(() => {
     loadSettings();
     
-    // Start Node.js Engine
-    nodejs.start('main.js');
-    
-    const listener = (msg: any) => {
-      if (msg.type === 'backend_ready') {
-        addLog('Node.js Backend is ready.');
-      } else if (msg.type === 'log') {
-        addLog(msg.data);
-      } else if (msg.type === 'qr') {
-        setQrCode(msg.data);
-        setStatus('Scan QR Code');
-      } else if (msg.type === 'status') {
-        if (msg.data === 'connected') {
-          setStatus('Connected / Online');
-          setQrCode('');
-        } else if (msg.data === 'disconnected') {
-          setStatus('Disconnected');
-        } else if (msg.data === 'logged_out') {
-          setStatus('Logged Out - Please restart');
-          setQrCode('');
-        }
+    // Delay Node.js start and wrap in try-catch
+    const initNode = async () => {
+      try {
+        addLog('Loading nodejs-mobile-react-native module...');
+        const nodejs = require('nodejs-mobile-react-native').default;
+        addLog('Module loaded successfully. Starting Node.js engine...');
+        
+        nodejs.start('main.js');
+        setNodeLoaded(true);
+        addLog('Node.js engine started.');
+        setStatus('Offline');
+        
+        const listener = (msg: any) => {
+          if (msg.type === 'backend_ready') {
+            addLog('Node.js Backend is ready.');
+          } else if (msg.type === 'log') {
+            addLog(msg.data);
+          } else if (msg.type === 'qr') {
+            setQrCode(msg.data);
+            setStatus('Scan QR Code');
+          } else if (msg.type === 'status') {
+            if (msg.data === 'connected') {
+              setStatus('Connected / Online');
+              setQrCode('');
+            } else if (msg.data === 'disconnected') {
+              setStatus('Disconnected');
+            } else if (msg.data === 'logged_out') {
+              setStatus('Logged Out - Please restart');
+              setQrCode('');
+            }
+          }
+        };
+        
+        nodejs.channel.addListener('message', listener);
+      } catch (e: any) {
+        const errorMsg = `FATAL: Node.js init failed: ${e.message}\n${e.stack || ''}`;
+        addLog(errorMsg);
+        setStatus('CRASHED - See Logs');
       }
     };
-    
-    nodejs.channel.addListener('message', listener);
-    
-    return () => {
-      nodejs.channel.removeListener('message', listener);
-    };
+
+    // Small delay to let the UI render first
+    setTimeout(initNode, 500);
   }, []);
 
   const addLog = (msg: string) => {
@@ -103,11 +163,22 @@ export default function App() {
     }
   };
 
+  const getNodejs = () => {
+    try {
+      return require('nodejs-mobile-react-native').default;
+    } catch (e) {
+      addLog('Node.js module not available yet.');
+      return null;
+    }
+  };
+
   const sendConfigToBackend = (key: string, prompt: string, excluded: string) => {
+    const node = getNodejs();
+    if (!node) return;
     // Parse excluded numbers (comma separated)
     const excludeArr = excluded.split(',').map(n => n.trim()).filter(n => n);
     
-    nodejs.channel.send({
+    node.channel.send({
       type: 'config',
       data: {
         nvidiaApiKey: key,
@@ -118,17 +189,24 @@ export default function App() {
   };
 
   const startBot = () => {
+    const node = getNodejs();
+    if (!node) {
+      addLog('Error: Node.js engine not loaded yet.');
+      return;
+    }
     if (!nvidiaApiKey) {
       addLog('Warning: Please set your NVIDIA API Key in Settings before starting.');
       setActiveTab('settings');
       return;
     }
     setStatus('Starting...');
-    nodejs.channel.send({ type: 'start' });
+    node.channel.send({ type: 'start' });
   };
 
   const stopBot = () => {
-    nodejs.channel.send({ type: 'logout' });
+    const node = getNodejs();
+    if (!node) return;
+    node.channel.send({ type: 'logout' });
   };
 
   return (
@@ -365,3 +443,11 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
 });
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <LunaApp />
+    </ErrorBoundary>
+  );
+}
