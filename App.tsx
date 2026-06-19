@@ -10,6 +10,7 @@ import {
   TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import QRCode from 'react-native-qrcode-svg';
@@ -46,10 +47,10 @@ class ErrorBoundary extends Component<{children: ReactNode}, ErrorBoundaryState>
             ⚠ App Crashed - Error Details:
           </Text>
           <ScrollView>
-            <Text style={{ color: '#ff8888', fontSize: 14, fontFamily: 'monospace' }}>
+            <Text selectable style={{ color: '#ff8888', fontSize: 14, fontFamily: 'monospace' }}>
               {this.state.error}
             </Text>
-            <Text style={{ color: '#ffaaaa', fontSize: 12, fontFamily: 'monospace', marginTop: 10 }}>
+            <Text selectable style={{ color: '#ffaaaa', fontSize: 12, fontFamily: 'monospace', marginTop: 10 }}>
               {this.state.errorInfo}
             </Text>
           </ScrollView>
@@ -62,13 +63,16 @@ class ErrorBoundary extends Component<{children: ReactNode}, ErrorBoundaryState>
 
 const DEFAULT_PROMPT = "You are Luna, the personal and highly capable WhatsApp assistant to Sufiyan.\nYour role is to manage his incoming messages, schedule, and communications like a real human assistant.\n\nPERSONALITY TRAITS:\n- Warm, polite, and deeply professional.\n- You speak conversationally, exactly like a human assistant texting on WhatsApp. No robotic formatting.\n- Keep your replies relatively short and natural, suitable for text messaging.\n- You are highly protective of Sufiyan's time.\n\nKEY RULES:\n1. Always introduce yourself gracefully if the person seems to not know they are speaking to an assistant.\n2. If it's a casual greeting, respond warmly and ask how you can help on Sufiyan's behalf.\n3. If someone asks for a meeting or favor, politely let them know you will pass the message to Sufiyan.\n4. Never make up facts about Sufiyan's schedule. Instead, say you need to check with him.\n5. Do not use robotic phrases like 'As an AI language model'. You are strictly Luna, the human assistant.";
 
+// Store nodejs reference globally so all functions can access it
+let nodejsRef: any = null;
+
 function LunaApp() {
-  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, settings, logs
+  const [activeTab, setActiveTab] = useState('dashboard');
   
   const [status, setStatus] = useState('Initializing...');
   const [qrCode, setQrCode] = useState('');
   const [logs, setLogs] = useState<string[]>(['[App] Starting up...']);
-  const [nodeLoaded, setNodeLoaded] = useState(false);
+  const [nodeReady, setNodeReady] = useState(false);
   
   // Settings
   const [nvidiaApiKey, setNvidiaApiKey] = useState('');
@@ -76,77 +80,110 @@ function LunaApp() {
   const [excludedNumbers, setExcludedNumbers] = useState('');
 
   const scrollViewRef = useRef<ScrollView>(null);
+  const logsRef = useRef<string[]>(['[App] Starting up...']);
+
+  // Stable addLog that doesn't depend on state closure
+  const addLog = (msg: string) => {
+    const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    logsRef.current = [...logsRef.current.slice(-99), entry];
+    setLogs([...logsRef.current]);
+  };
 
   useEffect(() => {
-    loadSettings();
-    
-    // Delay Node.js start and wrap in try-catch
-    const initNode = async () => {
+    // Load settings first, then init Node.js
+    const init = async () => {
+      // Load saved settings
       try {
-        addLog('Loading nodejs-mobile-react-native module...');
-        const nodejs = require('nodejs-mobile-react-native').default;
-        addLog('Module loaded successfully. Starting Node.js engine...');
+        const key = await AsyncStorage.getItem('nvidiaApiKey');
+        const prompt = await AsyncStorage.getItem('systemPrompt');
+        const excluded = await AsyncStorage.getItem('excludedNumbers');
+        
+        if (key) setNvidiaApiKey(key);
+        if (prompt) setSystemPrompt(prompt);
+        if (excluded) setExcludedNumbers(excluded);
+        
+        addLog('Settings loaded from storage.');
+      } catch (e) {
+        addLog('Could not load saved settings, using defaults.');
+      }
+
+      // Initialize Node.js engine
+      try {
+        addLog('Loading nodejs-mobile module...');
+        
+        // The module uses module.exports (CommonJS), NOT export default.
+        // require() returns the object directly, no .default needed.
+        const nodejs = require('nodejs-mobile-react-native');
+        
+        if (!nodejs || !nodejs.start) {
+          throw new Error(`Module loaded but missing .start method. Keys: ${Object.keys(nodejs || {}).join(', ')}`);
+        }
+        
+        nodejsRef = nodejs;
+        addLog('Module loaded. Starting Node.js engine...');
         
         nodejs.start('main.js');
-        setNodeLoaded(true);
-        addLog('Node.js engine started.');
-        setStatus('Offline');
+        addLog('Node.js engine started successfully.');
         
-        const listener = (msg: any) => {
-          if (msg.type === 'backend_ready') {
-            addLog('Node.js Backend is ready.');
-          } else if (msg.type === 'log') {
-            addLog(msg.data);
-          } else if (msg.type === 'qr') {
-            setQrCode(msg.data);
-            setStatus('Scan QR Code');
-          } else if (msg.type === 'status') {
-            if (msg.data === 'connected') {
-              setStatus('Connected / Online');
-              setQrCode('');
-            } else if (msg.data === 'disconnected') {
-              setStatus('Disconnected');
-            } else if (msg.data === 'logged_out') {
-              setStatus('Logged Out - Please restart');
-              setQrCode('');
+        // Listen for messages from the backend
+        nodejs.channel.addListener('message', (msg: any) => {
+          try {
+            if (msg.type === 'backend_ready') {
+              addLog('Node.js Backend is ready.');
+              setNodeReady(true);
+              setStatus('Offline - Ready to connect');
+            } else if (msg.type === 'log') {
+              addLog(msg.data);
+            } else if (msg.type === 'qr') {
+              setQrCode(msg.data);
+              setStatus('Scan QR Code');
+              addLog('QR code received. Open WhatsApp > Linked Devices > Scan.');
+            } else if (msg.type === 'status') {
+              if (msg.data === 'connected') {
+                setStatus('Connected / Online ✅');
+                setQrCode('');
+                addLog('WhatsApp connected! Luna is now active.');
+              } else if (msg.data === 'disconnected') {
+                setStatus('Disconnected');
+                addLog('WhatsApp disconnected.');
+              } else if (msg.data === 'logged_out') {
+                setStatus('Logged Out');
+                setQrCode('');
+                addLog('Logged out from WhatsApp. Tap START BOT to reconnect.');
+              }
             }
+          } catch (listenerErr: any) {
+            addLog(`Listener error: ${listenerErr.message}`);
           }
-        };
-        
-        nodejs.channel.addListener('message', listener);
+        });
+
+        setStatus('Offline - Ready to connect');
       } catch (e: any) {
-        const errorMsg = `FATAL: Node.js init failed: ${e.message}\n${e.stack || ''}`;
-        addLog(errorMsg);
-        setStatus('CRASHED - See Logs');
+        const errorMsg = `Node.js init failed: ${e.message}`;
+        addLog(`FATAL: ${errorMsg}`);
+        addLog(`Stack: ${e.stack || 'N/A'}`);
+        setStatus('Engine Error - See Logs');
       }
     };
 
     // Small delay to let the UI render first
-    setTimeout(initNode, 500);
+    setTimeout(init, 300);
   }, []);
 
-  const addLog = (msg: string) => {
-    setLogs(prev => {
-      const newLogs = [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`];
-      if (newLogs.length > 100) newLogs.shift(); // Keep last 100 logs
-      return newLogs;
-    });
-  };
-
-  const loadSettings = async () => {
+  const sendConfigToBackend = (key: string, prompt: string, excluded: string) => {
+    if (!nodejsRef) return;
     try {
-      const key = await AsyncStorage.getItem('nvidiaApiKey');
-      const prompt = await AsyncStorage.getItem('systemPrompt');
-      const excluded = await AsyncStorage.getItem('excludedNumbers');
-      
-      if (key) setNvidiaApiKey(key);
-      if (prompt) setSystemPrompt(prompt);
-      if (excluded) setExcludedNumbers(excluded);
-      
-      // Send config to backend right away
-      sendConfigToBackend(key || '', prompt || DEFAULT_PROMPT, excluded || '');
-    } catch (e) {
-      addLog('Failed to load settings from storage.');
+      const excludeArr = excluded.split(',').map(n => n.trim()).filter(n => n);
+      nodejsRef.channel.send({
+        type: 'config',
+        data: {
+          nvidiaApiKey: key,
+          systemPrompt: prompt,
+          excludedNumbers: excludeArr,
+        },
+      });
+    } catch (e: any) {
+      addLog(`Failed to send config: ${e.message}`);
     }
   };
 
@@ -155,58 +192,42 @@ function LunaApp() {
       await AsyncStorage.setItem('nvidiaApiKey', nvidiaApiKey);
       await AsyncStorage.setItem('systemPrompt', systemPrompt);
       await AsyncStorage.setItem('excludedNumbers', excludedNumbers);
-      addLog('Settings saved locally.');
-      
+      addLog('Settings saved.');
       sendConfigToBackend(nvidiaApiKey, systemPrompt, excludedNumbers);
-    } catch (e) {
-      addLog('Failed to save settings.');
+    } catch (e: any) {
+      addLog(`Failed to save settings: ${e.message}`);
     }
-  };
-
-  const getNodejs = () => {
-    try {
-      return require('nodejs-mobile-react-native').default;
-    } catch (e) {
-      addLog('Node.js module not available yet.');
-      return null;
-    }
-  };
-
-  const sendConfigToBackend = (key: string, prompt: string, excluded: string) => {
-    const node = getNodejs();
-    if (!node) return;
-    // Parse excluded numbers (comma separated)
-    const excludeArr = excluded.split(',').map(n => n.trim()).filter(n => n);
-    
-    node.channel.send({
-      type: 'config',
-      data: {
-        nvidiaApiKey: key,
-        systemPrompt: prompt,
-        excludedNumbers: excludeArr
-      }
-    });
   };
 
   const startBot = () => {
-    const node = getNodejs();
-    if (!node) {
-      addLog('Error: Node.js engine not loaded yet.');
+    if (!nodejsRef) {
+      addLog('Error: Node.js engine not loaded. Check Logs tab.');
       return;
     }
     if (!nvidiaApiKey) {
-      addLog('Warning: Please set your NVIDIA API Key in Settings before starting.');
+      addLog('Please set your NVIDIA API Key in Settings first.');
       setActiveTab('settings');
       return;
     }
-    setStatus('Starting...');
-    node.channel.send({ type: 'start' });
+    try {
+      // Send latest config before starting
+      sendConfigToBackend(nvidiaApiKey, systemPrompt, excludedNumbers);
+      setStatus('Starting...');
+      nodejsRef.channel.send({ type: 'start' });
+      addLog('Bot start command sent.');
+    } catch (e: any) {
+      addLog(`Failed to start bot: ${e.message}`);
+    }
   };
 
   const stopBot = () => {
-    const node = getNodejs();
-    if (!node) return;
-    node.channel.send({ type: 'logout' });
+    if (!nodejsRef) return;
+    try {
+      nodejsRef.channel.send({ type: 'logout' });
+      addLog('Logout command sent.');
+    } catch (e: any) {
+      addLog(`Failed to stop bot: ${e.message}`);
+    }
   };
 
   return (
@@ -220,13 +241,13 @@ function LunaApp() {
 
       <View style={styles.tabs}>
         <TouchableOpacity style={[styles.tab, activeTab === 'dashboard' && styles.activeTab]} onPress={() => setActiveTab('dashboard')}>
-          <Text style={styles.tabText}>Dashboard</Text>
+          <Text style={[styles.tabText, activeTab === 'dashboard' && styles.activeTabText]}>Dashboard</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.tab, activeTab === 'settings' && styles.activeTab]} onPress={() => setActiveTab('settings')}>
-          <Text style={styles.tabText}>Settings</Text>
+          <Text style={[styles.tabText, activeTab === 'settings' && styles.activeTabText]}>Settings</Text>
         </TouchableOpacity>
         <TouchableOpacity style={[styles.tab, activeTab === 'logs' && styles.activeTab]} onPress={() => setActiveTab('logs')}>
-          <Text style={styles.tabText}>Logs</Text>
+          <Text style={[styles.tabText, activeTab === 'logs' && styles.activeTabText]}>Logs</Text>
         </TouchableOpacity>
       </View>
 
@@ -258,14 +279,17 @@ function LunaApp() {
         )}
 
         {activeTab === 'settings' && (
-          <ScrollView style={styles.settings}>
+          <ScrollView style={styles.settings} keyboardShouldPersistTaps="handled">
             <Text style={styles.label}>NVIDIA API Key</Text>
             <TextInput
               style={styles.input}
               value={nvidiaApiKey}
               onChangeText={setNvidiaApiKey}
               placeholder="nvapi-..."
+              placeholderTextColor="#999"
               secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
             />
 
             <Text style={styles.label}>Excluded Contacts (Comma separated phone numbers without +)</Text>
@@ -274,6 +298,8 @@ function LunaApp() {
               value={excludedNumbers}
               onChangeText={setExcludedNumbers}
               placeholder="e.g. 919876543210, 12025550123"
+              placeholderTextColor="#999"
+              keyboardType="phone-pad"
             />
 
             <Text style={styles.label}>System Prompt (Luna's Instructions)</Text>
@@ -283,12 +309,12 @@ function LunaApp() {
               onChangeText={setSystemPrompt}
               multiline
               textAlignVertical="top"
+              placeholderTextColor="#999"
             />
 
-            <TouchableOpacity style={styles.primaryButton} onPress={saveSettings}>
+            <TouchableOpacity style={[styles.primaryButton, { marginBottom: 40 }]} onPress={saveSettings}>
               <Text style={styles.buttonText}>SAVE SETTINGS</Text>
             </TouchableOpacity>
-            <View style={{height: 40}} />
           </ScrollView>
         )}
 
@@ -299,8 +325,11 @@ function LunaApp() {
             onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
           >
             {logs.map((log, index) => (
-              <Text key={index} style={styles.logText}>{log}</Text>
+              <Text key={index} selectable style={styles.logText}>{log}</Text>
             ))}
+            {logs.length === 0 && (
+              <Text style={styles.logText}>No logs yet.</Text>
+            )}
           </ScrollView>
         )}
 
@@ -327,6 +356,7 @@ const styles = StyleSheet.create({
   statusText: {
     color: '#dcf8c6',
     marginTop: 5,
+    fontSize: 13,
   },
   tabs: {
     flexDirection: 'row',
@@ -345,7 +375,10 @@ const styles = StyleSheet.create({
   },
   tabText: {
     fontWeight: 'bold',
-    color: '#333',
+    color: '#999',
+  },
+  activeTabText: {
+    color: '#075E54',
   },
   content: {
     flex: 1,
@@ -420,6 +453,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 10,
     fontSize: 16,
+    color: '#333',
   },
   textArea: {
     backgroundColor: 'white',
@@ -430,6 +464,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     height: 150,
     marginBottom: 20,
+    color: '#333',
   },
   logsContainer: {
     flex: 1,

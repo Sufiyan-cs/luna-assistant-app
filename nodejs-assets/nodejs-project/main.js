@@ -1,10 +1,9 @@
 const rn_bridge = require('rn-bridge');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
-const pino = require('pino');
-const { OpenAI } = require('openai');
 const path = require('path');
 const fs = require('fs');
+
+// Wrap everything in try-catch so the backend never silently dies
+try {
 
 let sock = null;
 let openai = null;
@@ -20,159 +19,218 @@ let config = {
 
 // Helper to send logs to UI
 function sendLog(msg) {
-    rn_bridge.channel.send({ type: 'log', data: msg });
+    try {
+        rn_bridge.channel.send({ type: 'log', data: String(msg) });
+    } catch (e) {
+        // If the bridge is broken, we can't do much
+        console.error('sendLog failed:', e);
+    }
 }
 
-// Setup OpenAI
+// Setup OpenAI client
 function setupOpenAI() {
-    if (config.nvidiaApiKey) {
-        openai = new OpenAI({
-            apiKey: config.nvidiaApiKey,
-            baseURL: 'https://integrate.api.nvidia.com/v1',
-        });
-        sendLog("OpenAI (NVIDIA) client initialized.");
-    } else {
-        sendLog("Warning: NVIDIA API Key is missing. Luna will not be able to reply.");
+    try {
+        if (config.nvidiaApiKey) {
+            const { OpenAI } = require('openai');
+            openai = new OpenAI({
+                apiKey: config.nvidiaApiKey,
+                baseURL: 'https://integrate.api.nvidia.com/v1',
+            });
+            sendLog("OpenAI (NVIDIA) client initialized.");
+        } else {
+            sendLog("Warning: NVIDIA API Key is missing. Luna will not be able to reply.");
+        }
+    } catch (e) {
+        sendLog("Error initializing OpenAI: " + e.message);
     }
 }
 
 async function connectToWhatsApp() {
-    sendLog("Initializing Baileys connection...");
-    
-    // Store auth state in the app's internal storage
-    const authFolder = path.join(__dirname, 'baileys_auth_info');
-    const { state, saveCreds } = await useMultiFileAuthState(authFolder);
-
-    sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        logger: pino({ level: 'silent' }), // Silence internal logs to keep UI clean
-        browser: ['Luna Assistant', 'Chrome', '1.0.0'],
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    try {
+        sendLog("Initializing Baileys connection...");
         
-        if (qr) {
-            // Send raw QR text to React Native to render
-            rn_bridge.channel.send({ type: 'qr', data: qr });
-            sendLog("QR code received. Scan it in the app.");
+        const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+        const pino = require('pino');
+        
+        // Store auth state in the app's writable directory
+        const authFolder = path.join(rn_bridge.app.datadir(), 'baileys_auth_info');
+        
+        // Ensure auth folder exists
+        if (!fs.existsSync(authFolder)) {
+            fs.mkdirSync(authFolder, { recursive: true });
         }
+        
+        const { state, saveCreds } = await useMultiFileAuthState(authFolder);
 
-        if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            sendLog(`Connection closed due to: ${lastDisconnect?.error?.message || 'Unknown error'}`);
-            rn_bridge.channel.send({ type: 'status', data: 'disconnected' });
-            
-            if (shouldReconnect) {
-                sendLog("Reconnecting...");
-                connectToWhatsApp();
-            } else {
-                sendLog("Logged out. Please delete auth info and scan again.");
-                rn_bridge.channel.send({ type: 'status', data: 'logged_out' });
+        sock = makeWASocket({
+            auth: state,
+            printQRInTerminal: false,
+            logger: pino({ level: 'silent' }),
+            browser: ['Luna Assistant', 'Chrome', '1.0.0'],
+        });
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', (update) => {
+            try {
+                const { connection, lastDisconnect, qr } = update;
+                
+                if (qr) {
+                    rn_bridge.channel.send({ type: 'qr', data: qr });
+                    sendLog("QR code generated. Scan it with WhatsApp.");
+                }
+
+                if (connection === 'close') {
+                    const statusCode = lastDisconnect?.error?.output?.statusCode;
+                    const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                    
+                    sendLog(`Connection closed (code: ${statusCode || 'unknown'}): ${lastDisconnect?.error?.message || 'Unknown'}`);
+                    rn_bridge.channel.send({ type: 'status', data: 'disconnected' });
+                    
+                    if (shouldReconnect) {
+                        sendLog("Reconnecting in 3 seconds...");
+                        setTimeout(() => connectToWhatsApp(), 3000);
+                    } else {
+                        sendLog("Logged out. Tap START BOT to reconnect.");
+                        rn_bridge.channel.send({ type: 'status', data: 'logged_out' });
+                        // Clean up auth so fresh QR is shown
+                        try {
+                            if (fs.existsSync(authFolder)) {
+                                fs.rmSync(authFolder, { recursive: true, force: true });
+                            }
+                        } catch (cleanErr) {
+                            sendLog("Warning: Could not clean auth folder: " + cleanErr.message);
+                        }
+                    }
+                } else if (connection === 'open') {
+                    sendLog("Luna is online and ready!");
+                    rn_bridge.channel.send({ type: 'status', data: 'connected' });
+                }
+            } catch (connErr) {
+                sendLog("Connection handler error: " + connErr.message);
             }
-        } else if (connection === 'open') {
-            sendLog("Luna is online and ready!");
-            rn_bridge.channel.send({ type: 'status', data: 'connected' });
-        }
-    });
+        });
 
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages[0];
+        sock.ev.on('messages.upsert', async (m) => {
+            try {
+                const msg = m.messages[0];
+                
+                // Safety checks
+                if (!msg || !msg.message || !msg.key) return;
+                if (msg.key.fromMe) return;
+                if (msg.key.remoteJid === 'status@broadcast') return;
+                if (msg.key.remoteJid && msg.key.remoteJid.endsWith('@g.us')) return;
+                
+                // Time filter
+                if (msg.messageTimestamp && msg.messageTimestamp < startTime) return;
+
+                const remoteJid = msg.key.remoteJid;
+                if (!remoteJid) return;
+                
+                // Extract text
+                const incomingText = msg.message.conversation 
+                    || msg.message.extendedTextMessage?.text 
+                    || "";
+                if (!incomingText) return;
+
+                const contactNumber = remoteJid.split('@')[0];
+
+                // Check exclusions
+                if (config.excludedNumbers.includes(contactNumber)) {
+                    sendLog(`Ignored excluded: ${contactNumber}`);
+                    return;
+                }
+
+                sendLog(`From ${contactNumber}: ${incomingText.substring(0, 50)}${incomingText.length > 50 ? '...' : ''}`);
+
+                if (!openai) {
+                    sendLog(`Cannot reply - No API key set.`);
+                    return;
+                }
+
+                // Initialize or retrieve chat history
+                if (!chatHistories[remoteJid]) {
+                    chatHistories[remoteJid] = [
+                        { role: "system", content: config.systemPrompt }
+                    ];
+                }
+
+                chatHistories[remoteJid].push({ role: "user", content: incomingText });
+
+                // Cap history to 15 messages
+                if (chatHistories[remoteJid].length > 15) {
+                    chatHistories[remoteJid] = [
+                        chatHistories[remoteJid][0],
+                        ...chatHistories[remoteJid].slice(-14)
+                    ];
+                }
+
+                sendLog(`Generating response...`);
+                
+                // Show typing indicator
+                try {
+                    await sock.sendPresenceUpdate('composing', remoteJid);
+                } catch (_) { /* typing indicator is non-critical */ }
+
+                const completion = await openai.chat.completions.create({
+                    model: "meta/llama-3.3-70b-instruct",
+                    messages: chatHistories[remoteJid],
+                    temperature: 0.7,
+                    max_tokens: 150,
+                });
+
+                let replyText = completion.choices[0].message.content.trim();
+                chatHistories[remoteJid].push({ role: "assistant", content: replyText });
+
+                // Small delay for typing realism
+                const typingDelay = Math.min(replyText.length * 15, 1500); 
+                await new Promise(resolve => setTimeout(resolve, typingDelay));
+                
+                try {
+                    await sock.sendPresenceUpdate('paused', remoteJid);
+                } catch (_) { /* non-critical */ }
+                
+                await sock.sendMessage(remoteJid, { text: replyText });
+                sendLog(`Replied to ${contactNumber}: ${replyText.substring(0, 60)}${replyText.length > 60 ? '...' : ''}`);
+
+            } catch (error) {
+                sendLog(`Response error: ${error.message}`);
+            }
+        });
         
-        // Ignore messages sent by ourselves, status updates, or missing text
-        if (!msg.message || msg.key.fromMe || msg.key.remoteJid === 'status@broadcast') return;
-        if (msg.key.remoteJid.endsWith('@g.us')) return; // Ignore groups
+        sendLog("Baileys event listeners registered.");
         
-        // Time filter (Baileys timestamp is in seconds)
-        if (msg.messageTimestamp < startTime) return;
-
-        const remoteJid = msg.key.remoteJid;
-        
-        // Extract text depending on message type
-        const incomingText = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (!incomingText) return;
-
-        const contactNumber = remoteJid.split('@')[0];
-
-        // Check exclusions
-        if (config.excludedNumbers.includes(contactNumber)) {
-            sendLog(`Ignored excluded contact: ${contactNumber}`);
-            return;
-        }
-
-        sendLog(`Received from ${contactNumber}: ${incomingText}`);
-
-        if (!openai) {
-            sendLog(`Cannot reply to ${contactNumber} - No NVIDIA API Key set.`);
-            return;
-        }
-
-        // Initialize history
-        if (!chatHistories[remoteJid]) {
-            chatHistories[remoteJid] = [
-                { role: "system", content: config.systemPrompt }
-            ];
-        }
-
-        chatHistories[remoteJid].push({ role: "user", content: incomingText });
-
-        // Cap history to 15 messages (1 system + 14 chat)
-        if (chatHistories[remoteJid].length > 15) {
-            chatHistories[remoteJid] = [
-                chatHistories[remoteJid][0],
-                ...chatHistories[remoteJid].slice(-14)
-            ];
-        }
-
-        try {
-            sendLog(`Luna is processing response...`);
-            
-            // Show typing indicator
-            await sock.sendPresenceUpdate('composing', remoteJid);
-
-            const completion = await openai.chat.completions.create({
-                model: "meta/llama-3.3-70b-instruct",
-                messages: chatHistories[remoteJid],
-                temperature: 0.7,
-                max_tokens: 150,
-            });
-
-            let replyText = completion.choices[0].message.content.trim();
-            chatHistories[remoteJid].push({ role: "assistant", content: replyText });
-
-            // Small delay for typing realism
-            const typingDelay = Math.min(replyText.length * 15, 1500); 
-            await new Promise(resolve => setTimeout(resolve, typingDelay));
-            
-            await sock.sendPresenceUpdate('paused', remoteJid);
-            await sock.sendMessage(remoteJid, { text: replyText });
-            
-            sendLog(`Luna sent: ${replyText}`);
-
-        } catch (error) {
-            sendLog(`Error generating response: ${error.message}`);
-        }
-    });
+    } catch (error) {
+        sendLog(`WhatsApp connection error: ${error.message}`);
+        sendLog(`Stack: ${error.stack || 'N/A'}`);
+    }
 }
 
 // Listen for messages from React Native
 rn_bridge.channel.on('message', (msg) => {
     try {
+        if (!msg || !msg.type) return;
+        
         if (msg.type === 'start') {
             startTime = Math.floor(Date.now() / 1000);
+            chatHistories = {}; // Reset histories on fresh start
             connectToWhatsApp();
         } else if (msg.type === 'config') {
-            config = { ...config, ...msg.data };
-            setupOpenAI();
-            sendLog("Configuration updated from UI.");
+            if (msg.data) {
+                config = { ...config, ...msg.data };
+                setupOpenAI();
+                sendLog("Configuration updated.");
+            }
         } else if (msg.type === 'logout') {
-             if (sock) {
-                 sock.logout();
-                 sendLog("Logged out manually.");
-             }
+            if (sock) {
+                try {
+                    sock.logout();
+                    sendLog("Logged out manually.");
+                } catch (logoutErr) {
+                    sendLog("Logout error: " + logoutErr.message);
+                }
+                sock = null;
+            }
         }
     } catch (e) {
         sendLog(`Bridge error: ${e.message}`);
@@ -180,4 +238,23 @@ rn_bridge.channel.on('message', (msg) => {
 });
 
 // Tell React Native we are ready
+sendLog("Node.js backend loaded successfully.");
 rn_bridge.channel.send({ type: 'backend_ready' });
+
+// Catch unhandled errors so the backend doesn't silently die
+process.on('uncaughtException', (err) => {
+    sendLog(`Uncaught Exception: ${err.message}`);
+});
+
+process.on('unhandledRejection', (reason) => {
+    sendLog(`Unhandled Rejection: ${reason}`);
+});
+
+} catch (fatalErr) {
+    // If even the bootstrap fails, try to tell the UI
+    try {
+        rn_bridge.channel.send({ type: 'log', data: 'FATAL BACKEND ERROR: ' + fatalErr.message });
+    } catch (_) {
+        console.error('Complete backend failure:', fatalErr);
+    }
+}
