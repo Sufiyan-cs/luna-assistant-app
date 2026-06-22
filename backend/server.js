@@ -154,15 +154,17 @@ CRITICAL RULES:
 - Keep replies natural and conversational.
 
 SENDING MESSAGES:
-You CAN send WhatsApp messages on Sufiyan's behalf! If he asks you to message someone, include this exact JSON block at the END of your reply (after your natural text response):
-[SEND]{"to": "919876543210", "text": "the message to send"}[/SEND]
+You CAN send WhatsApp messages on Sufiyan's behalf! When he asks you to message someone, send it IMMEDIATELY — do NOT ask for confirmation. Just do it and tell him it's done.
 
-IMPORTANT: 
-- The number must be digits only with country code (e.g. 919876543210), no spaces or +.
-- You can use the relationships list above to resolve names to numbers (e.g. if he says "message Dad", look up Dad's number).
-- If you don't know the number, ask Sufiyan for it.
-- Always confirm what you're about to send before sending.
-- After sending, tell him it's done.${activityBlock}`
+To send a message, put this EXACT tag at the very end of your response:
+[SEND]{"to":"919876543210","text":"the message"}[/SEND]
+
+Rules for sending:
+- The "to" number must be digits only with country code, no spaces, no plus sign. Example: 919876543210
+- Use the relationships list to resolve names to numbers (e.g. "message Dad" → look up Dad's number).
+- If you don't know the number, ask for it. Do NOT guess.
+- Do NOT ask "should I send this?" or "would you like me to confirm?" — just send it immediately.
+- After the [SEND] tag, the system will send it automatically. Just say something like "Done, sent!"${activityBlock}`
         }];
 
         // Re-add previous messages from this session
@@ -186,21 +188,38 @@ IMPORTANT:
 
             let reply = completion.choices[0].message.content.trim();
 
-            // Check if Luna wants to send a WhatsApp message
-            const sendMatch = reply.match(/\[SEND\](.*?)\[\/SEND\]/s);
+            // Robust parsing: try multiple patterns to catch LLM formatting variations
+            let sendCmd = null;
+            
+            // Pattern 1: Exact [SEND]...[/SEND]
+            let sendMatch = reply.match(/\[SEND\]\s*(\{.*?\})\s*\[\/SEND\]/s);
+            // Pattern 2: [SEND] with spaces
+            if (!sendMatch) sendMatch = reply.match(/\[\s*SEND\s*\]\s*(\{.*?\})\s*\[\s*\/\s*SEND\s*\]/s);
+            // Pattern 3: Just look for {"to":..., "text":...} anywhere
+            if (!sendMatch) sendMatch = reply.match(/\{"to"\s*:\s*"(\d+)"\s*,\s*"text"\s*:\s*"(.*?)"\}/s);
+
             if (sendMatch && sock) {
                 try {
-                    const sendCmd = JSON.parse(sendMatch[1]);
+                    // If pattern 3 matched (no JSON group), build it
+                    if (sendMatch[2] !== undefined) {
+                        sendCmd = { to: sendMatch[1], text: sendMatch[2] };
+                    } else {
+                        sendCmd = JSON.parse(sendMatch[1]);
+                    }
+                    
                     const targetJid = sendCmd.to + '@s.whatsapp.net';
                     await sock.sendMessage(targetJid, { text: sendCmd.text });
-                    log(`Message sent to ${sendCmd.to}: "${sendCmd.text.substring(0, 50)}"`);
-                    // Clean the [SEND] block from the visible reply
-                    reply = reply.replace(/\[SEND\].*?\[\/SEND\]/s, '').trim();
-                    if (!reply) reply = `Done! I've sent "${sendCmd.text}" to ${sendCmd.to}.`;
+                    log(`✅ Message sent to ${sendCmd.to}: "${sendCmd.text.substring(0, 50)}"`);
+                    
+                    // Strip ALL send-related blocks from the visible reply
+                    reply = reply.replace(/\[?\s*SEND\s*\]?\s*\{.*?\}\s*\[?\s*\/?\s*SEND\s*\]?/gs, '').trim();
+                    reply = reply.replace(/\{"to"\s*:\s*".*?"\s*,\s*"text"\s*:\s*".*?"\}/gs, '').trim();
+                    if (!reply) reply = `Done! I've sent "${sendCmd.text}" to ${sendCmd.to}. ✅`;
                 } catch (sendErr) {
                     log('Send message error: ' + sendErr.message);
-                    reply = reply.replace(/\[SEND\].*?\[\/SEND\]/s, '').trim();
-                    reply += '\n\n⚠️ Sorry, I couldn\'t send that message. Make sure the bot is connected first.';
+                    reply = reply.replace(/\[?\s*SEND\s*\]?\s*\{.*?\}\s*\[?\s*\/?\s*SEND\s*\]?/gs, '').trim();
+                    reply = reply.replace(/\{"to"\s*:\s*".*?"\s*,\s*"text"\s*:\s*".*?"\}/gs, '').trim();
+                    reply += '\n\n⚠️ Sorry, I couldn\'t send that message. Make sure the bot is connected to WhatsApp first.';
                 }
             }
 
