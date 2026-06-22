@@ -26,6 +26,24 @@ let startTime = 0;
 let contactNames = {}; // Cache: jid -> pushName
 let activityLog = []; // Real log of what happened for Luna's direct chat
 
+const MEMORY_FILE = path.join(__dirname, 'luna_memory.json');
+try {
+    if (fs.existsSync(MEMORY_FILE)) {
+        const mem = JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf8'));
+        if (mem.activityLog) activityLog = mem.activityLog;
+    }
+} catch (e) {
+    console.error('Could not load memory', e);
+}
+
+function saveMemory() {
+    try {
+        fs.writeFileSync(MEMORY_FILE, JSON.stringify({ activityLog }));
+    } catch (e) {
+        console.error('Could not save memory', e);
+    }
+}
+
 let config = {
     systemPrompt: '',
     excludedNumbers: [],
@@ -306,8 +324,8 @@ Rules for sending:
                         if (msg.key.remoteJid === 'status@broadcast') return;
                         if (msg.key.remoteJid && msg.key.remoteJid.endsWith('@g.us')) return;
                         
-                        // Check if this is an old/unread message
-                        const isOldMessage = msg.messageTimestamp && msg.messageTimestamp < startTime;
+                        // Check if this is an old/unread message (allow 30s skew)
+                        const isOldMessage = msg.messageTimestamp && msg.messageTimestamp < (startTime - 30);
                         
                         const jid = msg.key.remoteJid;
                         if (!jid) return;
@@ -329,6 +347,7 @@ Rules for sending:
                         if (msg.message.audioMessage) {
                             if (isOldMessage) {
                                 activityLog.push({ time: new Date().toLocaleTimeString(), contact: displayName, summary: 'Sent a voice message (unread)', action: 'old message - not replied' });
+                                saveMemory();
                                 return;
                             }
                             log(`Voice message received from ${displayName}`);
@@ -342,6 +361,7 @@ Rules for sending:
                                 number: num
                             });
                             activityLog.push({ time: new Date().toLocaleTimeString(), contact: displayName, summary: 'Sent a voice message', action: 'voice note (not replied)' });
+                            saveMemory();
                             return;
                         }
                         
@@ -357,6 +377,7 @@ Rules for sending:
                                 summary: `Unread message: "${text.substring(0, 100)}"`,
                                 action: 'old/unread - not replied'
                             });
+                            saveMemory();
                             socket.emit('activity', {
                                 type: 'ignore',
                                 priority: 'Low',
@@ -446,6 +467,7 @@ Rules for sending:
                             action: decision.action === 'reply' ? `Luna replied: "${(decision.replyText || '').substring(0, 80)}"` : `Ignored (${decision.priority} priority)`
                         });
                         if (activityLog.length > 50) activityLog = activityLog.slice(-50);
+                        saveMemory();
 
                         if (decision.action === 'reply' && decision.replyText) {
                             chatHistories[jid].push({ role: 'assistant', content: decision.replyText });
