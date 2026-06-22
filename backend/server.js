@@ -137,19 +137,32 @@ io.on('connection', (socket) => {
             ? `\n\nHere is the REAL activity log of messages that actually came in today. ONLY reference these — NEVER invent messages or contacts:\n---\n${recentActivity}\n---` 
             : `\n\nNo messages have been received yet today. If Sufiyan asks about messages, tell him honestly that no messages have come in yet.`;
 
+        // Build relationships context
+        const relsList = Object.entries(config.relationships).map(([num, label]) => `${num} = ${label}`).join(', ');
+        const relsBlock = relsList ? `\nSufiyan's contacts: ${relsList}` : '';
+
         // Reset direct chat each time to inject fresh activity data
         chatHistories['_luna_direct'] = [{
             role: 'system',
             content: `You are Luna, Sufiyan's personal AI assistant. Sufiyan himself is talking to you directly through the app.
-He is your boss. Be warm, helpful, and speak naturally.
+He is your boss. Be warm, helpful, and speak naturally.${relsBlock}
 
 CRITICAL RULES:
 - You MUST ONLY reference REAL data from the activity log below.
 - NEVER make up, fabricate, or hallucinate any messages, contacts, or names.
-- If no messages have come in, say so honestly: "No messages have come in yet."
-- If he asks about messages, ONLY mention contacts and summaries from the activity log.
-- You can help with: summarizing real messages, taking notes, drafting replies, general conversation.
-- Keep replies natural and conversational. Do NOT output JSON.${activityBlock}`
+- If no messages have come in, say so honestly.
+- Keep replies natural and conversational.
+
+SENDING MESSAGES:
+You CAN send WhatsApp messages on Sufiyan's behalf! If he asks you to message someone, include this exact JSON block at the END of your reply (after your natural text response):
+[SEND]{"to": "919876543210", "text": "the message to send"}[/SEND]
+
+IMPORTANT: 
+- The number must be digits only with country code (e.g. 919876543210), no spaces or +.
+- You can use the relationships list above to resolve names to numbers (e.g. if he says "message Dad", look up Dad's number).
+- If you don't know the number, ask Sufiyan for it.
+- Always confirm what you're about to send before sending.
+- After sending, tell him it's done.${activityBlock}`
         }];
 
         // Re-add previous messages from this session
@@ -171,9 +184,27 @@ CRITICAL RULES:
                 max_tokens: 500,
             });
 
-            const reply = completion.choices[0].message.content.trim();
+            let reply = completion.choices[0].message.content.trim();
+
+            // Check if Luna wants to send a WhatsApp message
+            const sendMatch = reply.match(/\[SEND\](.*?)\[\/SEND\]/s);
+            if (sendMatch && sock) {
+                try {
+                    const sendCmd = JSON.parse(sendMatch[1]);
+                    const targetJid = sendCmd.to + '@s.whatsapp.net';
+                    await sock.sendMessage(targetJid, { text: sendCmd.text });
+                    log(`Message sent to ${sendCmd.to}: "${sendCmd.text.substring(0, 50)}"`);
+                    // Clean the [SEND] block from the visible reply
+                    reply = reply.replace(/\[SEND\].*?\[\/SEND\]/s, '').trim();
+                    if (!reply) reply = `Done! I've sent "${sendCmd.text}" to ${sendCmd.to}.`;
+                } catch (sendErr) {
+                    log('Send message error: ' + sendErr.message);
+                    reply = reply.replace(/\[SEND\].*?\[\/SEND\]/s, '').trim();
+                    reply += '\n\n⚠️ Sorry, I couldn\'t send that message. Make sure the bot is connected first.';
+                }
+            }
+
             chatHistories['_luna_direct'].push({ role: 'assistant', content: reply });
-            // Save messages for context persistence
             chatMessagesRef.push({ role: 'user', content: userMessage });
             chatMessagesRef.push({ role: 'assistant', content: reply });
             if (chatMessagesRef.length > 40) chatMessagesRef = chatMessagesRef.slice(-40);
@@ -248,7 +279,9 @@ CRITICAL RULES:
                         if (msg.key.fromMe) return;
                         if (msg.key.remoteJid === 'status@broadcast') return;
                         if (msg.key.remoteJid && msg.key.remoteJid.endsWith('@g.us')) return;
-                        if (msg.messageTimestamp && msg.messageTimestamp < startTime) return;
+                        
+                        // Check if this is an old/unread message
+                        const isOldMessage = msg.messageTimestamp && msg.messageTimestamp < startTime;
                         
                         const jid = msg.key.remoteJid;
                         if (!jid) return;
@@ -268,6 +301,10 @@ CRITICAL RULES:
 
                         // Handle Voice Messages
                         if (msg.message.audioMessage) {
+                            if (isOldMessage) {
+                                activityLog.push({ time: new Date().toLocaleTimeString(), contact: displayName, summary: 'Sent a voice message (unread)', action: 'old message - not replied' });
+                                return;
+                            }
                             log(`Voice message received from ${displayName}`);
                             socket.emit('activity', {
                                 type: 'voice',
@@ -284,6 +321,27 @@ CRITICAL RULES:
                         
                         const text = msg.message.conversation || (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) || '';
                         if (!text) return;
+
+                        // Old/unread messages: log for Luna's awareness but do NOT reply
+                        if (isOldMessage) {
+                            log(`[Unread] ${displayName}: ${text.substring(0, 50)}`);
+                            activityLog.push({
+                                time: new Date().toLocaleTimeString(),
+                                contact: displayName,
+                                summary: `Unread message: "${text.substring(0, 100)}"`,
+                                action: 'old/unread - not replied'
+                            });
+                            socket.emit('activity', {
+                                type: 'ignore',
+                                priority: 'Low',
+                                title: `📩 Unread: ${displayName}`,
+                                message: `"${text.substring(0, 100)}"`,
+                                time: new Date().toLocaleTimeString(),
+                                contact: displayName,
+                                number: num
+                            });
+                            return;
+                        }
                         
                         log('From ' + displayName + ': ' + text.substring(0, 50));
 
