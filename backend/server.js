@@ -15,7 +15,7 @@ app.get('/', (req, res) => {
 
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: '*' } // Allow React Native app to connect
+    cors: { origin: '*' }
 });
 
 // Global state
@@ -23,26 +23,61 @@ let sock = null;
 let openai = null;
 let chatHistories = {};
 let startTime = 0;
+let contactNames = {}; // Cache: jid -> pushName
 
 let config = {
     systemPrompt: '',
     excludedNumbers: [],
     nvidiaApiKey: '',
-    isPaused: false
+    isPaused: false,
+    relationships: {} // number -> label e.g. { '919876543210': 'Dad', '918765432109': 'Girlfriend' }
 };
 
 const PORT = process.env.PORT || 3000;
 
+// Helper: get display name for a number
+function getDisplayName(num, jid) {
+    const pushName = contactNames[jid] || null;
+    const relationship = config.relationships[num] || null;
+    
+    if (relationship && pushName) return `${pushName} (${relationship})`;
+    if (relationship) return `${num} (${relationship})`;
+    if (pushName) return pushName;
+    return num;
+}
+
+// Helper: build context string about who is messaging
+function getContactContext(num, jid) {
+    const pushName = contactNames[jid] || null;
+    const relationship = config.relationships[num] || null;
+    
+    let context = '';
+    if (pushName) context += `The sender's WhatsApp name is "${pushName}". `;
+    if (relationship) {
+        context += `This person is Sufiyan's ${relationship}. Adjust your tone accordingly — be warm, familial, and speak as if you know them personally. `;
+        if (['Dad', 'Mom', 'Mother', 'Father', 'Papa', 'Mama', 'Abbu', 'Ammi'].includes(relationship)) {
+            context += `Be very respectful and caring. Use "ji" or respectful language. `;
+        } else if (['Girlfriend', 'GF', 'Wife'].includes(relationship)) {
+            context += `Be sweet, warm, and friendly. You can be a bit casual and affectionate on Sufiyan's behalf. `;
+        } else if (['Best Friend', 'BFF', 'Bro', 'Brother'].includes(relationship)) {
+            context += `Be casual and chill, like talking to a close friend. `;
+        } else if (['Sister', 'Sis'].includes(relationship)) {
+            context += `Be warm and playful, like talking to family. `;
+        } else if (['Boss', 'Manager', 'Sir'].includes(relationship)) {
+            context += `Be very professional and formal. This is Sufiyan's superior. `;
+        }
+    }
+    return context;
+}
+
 io.on('connection', (socket) => {
     console.log(`Client connected: ${socket.id}`);
     
-    // Helper to send logs to the connected React Native client
     function log(msg) {
         console.log(`[LOG] ${msg}`);
         socket.emit('log', String(msg));
     }
 
-    // Send ready status to client
     socket.emit('backend_ready');
 
     socket.on('config', (data) => {
@@ -51,7 +86,8 @@ io.on('connection', (socket) => {
                 systemPrompt: data.systemPrompt || config.systemPrompt,
                 excludedNumbers: data.excludedNumbers || config.excludedNumbers,
                 nvidiaApiKey: data.nvidiaApiKey || config.nvidiaApiKey,
-                isPaused: data.isPaused !== undefined ? data.isPaused : config.isPaused
+                isPaused: data.isPaused !== undefined ? data.isPaused : config.isPaused,
+                relationships: data.relationships || config.relationships
             };
             
             if (config.nvidiaApiKey) {
@@ -73,13 +109,64 @@ io.on('connection', (socket) => {
     socket.on('pause_bot', () => {
         config.isPaused = true;
         log('Luna is now PAUSED. She will ignore all messages.');
-        socket.emit('activity', { type: 'system', message: 'Bot paused.' });
+        socket.emit('activity', { type: 'system', title: 'System', message: 'Bot paused — Luna will not reply to anyone.', time: new Date().toLocaleTimeString() });
     });
 
     socket.on('resume_bot', () => {
         config.isPaused = false;
         log('Luna is now RESUMED. She will reply to messages.');
-        socket.emit('activity', { type: 'system', message: 'Bot resumed.' });
+        socket.emit('activity', { type: 'system', title: 'System', message: 'Bot resumed — Luna is back online.', time: new Date().toLocaleTimeString() });
+    });
+
+    // Chat with Luna directly from the app
+    socket.on('luna_chat', async (data) => {
+        if (!openai) {
+            socket.emit('luna_reply', { text: 'Please set your NVIDIA API key in Settings first.' });
+            return;
+        }
+
+        const userMessage = data.message || '';
+        if (!userMessage.trim()) return;
+
+        // Use a separate chat history for Luna-Sufiyan direct chat
+        if (!chatHistories['_luna_direct']) {
+            chatHistories['_luna_direct'] = [{
+                role: 'system',
+                content: `You are Luna, Sufiyan's personal AI assistant. Right now, Sufiyan himself is talking to you directly through the app. 
+He is your boss. Be warm, helpful, proactive, and speak naturally like a close assistant who knows him well.
+You can help him with:
+- Summarizing who messaged him today
+- Taking notes or reminders
+- Drafting messages to send to people
+- Answering questions
+- General conversation
+
+Keep your replies natural and conversational. Do NOT output JSON. Just respond normally like a human assistant.`
+            }];
+        }
+
+        chatHistories['_luna_direct'].push({ role: 'user', content: userMessage });
+
+        if (chatHistories['_luna_direct'].length > 30) {
+            chatHistories['_luna_direct'] = [chatHistories['_luna_direct'][0]].concat(chatHistories['_luna_direct'].slice(-29));
+        }
+
+        try {
+            const completion = await openai.chat.completions.create({
+                model: 'meta/llama-3.3-70b-instruct',
+                messages: chatHistories['_luna_direct'],
+                temperature: 0.7,
+                max_tokens: 500,
+            });
+
+            const reply = completion.choices[0].message.content.trim();
+            chatHistories['_luna_direct'].push({ role: 'assistant', content: reply });
+
+            socket.emit('luna_reply', { text: reply });
+        } catch (e) {
+            log('Luna chat error: ' + e.message);
+            socket.emit('luna_reply', { text: 'Sorry, I had trouble processing that. Please try again.' });
+        }
     });
 
     socket.on('start', async () => {
@@ -151,31 +238,49 @@ io.on('connection', (socket) => {
                         if (!jid) return;
                         const num = jid.split('@')[0];
 
+                        // Cache the pushName for this contact
+                        if (msg.pushName) {
+                            contactNames[jid] = msg.pushName;
+                        }
+
+                        const displayName = getDisplayName(num, jid);
+
                         if (config.excludedNumbers.indexOf(num) !== -1) {
-                            log('Skipped excluded: ' + num);
+                            log('Skipped excluded: ' + displayName);
                             return;
                         }
 
                         // Handle Voice Messages
                         if (msg.message.audioMessage) {
-                            log(`Voice message received from ${num}`);
+                            log(`Voice message received from ${displayName}`);
                             socket.emit('activity', {
                                 type: 'voice',
                                 priority: 'Medium',
-                                title: `Voice Message from ${num}`,
-                                message: 'A voice note was received. Luna ignored it as she cannot listen to audio yet.',
-                                time: new Date().toLocaleTimeString()
+                                title: `🎤 Voice Note`,
+                                message: `${displayName} sent a voice message.`,
+                                time: new Date().toLocaleTimeString(),
+                                contact: displayName,
+                                number: num
                             });
-                            return; // Do not process audio
+                            return;
                         }
                         
                         const text = msg.message.conversation || (msg.message.extendedTextMessage && msg.message.extendedTextMessage.text) || '';
                         if (!text) return;
                         
-                        log('From ' + num + ': ' + text.substring(0, 50));
+                        log('From ' + displayName + ': ' + text.substring(0, 50));
 
                         if (config.isPaused) {
-                            log(`Ignored message from ${num} because bot is PAUSED.`);
+                            log(`Ignored (PAUSED): ${displayName}`);
+                            socket.emit('activity', {
+                                type: 'ignore',
+                                priority: 'Low',
+                                title: `⏸ Paused`,
+                                message: `${displayName}: "${text.substring(0, 80)}"`,
+                                time: new Date().toLocaleTimeString(),
+                                contact: displayName,
+                                number: num
+                            });
                             return;
                         }
                         
@@ -183,17 +288,19 @@ io.on('connection', (socket) => {
                             log('No API key - cannot reply.');
                             return;
                         }
+
+                        // Build contact-aware system prompt
+                        const contactContext = getContactContext(num, jid);
                         
                         if (!chatHistories[jid]) {
                             chatHistories[jid] = [{ 
                                 role: 'system', 
-                                content: `${config.systemPrompt}\n\nCRITICAL INSTRUCTION: You MUST reply ONLY with a valid JSON object. Do NOT include markdown blocks like \`\`\`json. Your JSON must strictly follow this structure:\n{\n  "priority": "Low|Medium|High",\n  "action": "reply|ignore",\n  "replyText": "The message to send to the user (leave empty if ignoring)",\n  "summary": "A 1-sentence summary of what this conversation is about right now"\n}\n\nRULES:\n- Low priority (Spam/Promos): action must be "ignore".\n- Medium priority (Casual/Normal): action must be "reply".\n- High priority (Emergency/Urgent): action must be "reply" (or ignore if inappropriate to reply).`
+                                content: `${config.systemPrompt}\n\n${contactContext}\nCRITICAL INSTRUCTION: You MUST reply ONLY with a valid JSON object. Do NOT include markdown blocks like \`\`\`json. Your JSON must strictly follow this structure:\n{\n  "priority": "Low|Medium|High",\n  "action": "reply|ignore",\n  "replyText": "The message to send to the user (leave empty if ignoring)",\n  "summary": "A 1-sentence summary of what this conversation is about right now"\n}\n\nRULES:\n- Low priority (Spam/Promos): action must be "ignore".\n- Medium priority (Casual/Normal): action must be "reply".\n- High priority (Emergency/Urgent/Family asking important things): action must be "reply".`
                             }];
                         }
                         chatHistories[jid].push({ role: 'user', content: text });
                         
                         if (chatHistories[jid].length > 15) {
-                            // Keep system prompt + last 14 messages
                             chatHistories[jid] = [chatHistories[jid][0]].concat(chatHistories[jid].slice(-14));
                         }
                         
@@ -202,35 +309,34 @@ io.on('connection', (socket) => {
                         const completion = await openai.chat.completions.create({
                             model: 'meta/llama-3.3-70b-instruct',
                             messages: chatHistories[jid],
-                            temperature: 0.1, // Lower temp for strict JSON
+                            temperature: 0.1,
                             max_tokens: 300,
                         });
                         
                         const rawReply = completion.choices[0].message.content.trim();
                         
-                        // Parse JSON
                         let decision;
                         try {
-                            // Attempt to strip any accidental markdown
                             const cleanJson = rawReply.replace(/```json/g, '').replace(/```/g, '').trim();
                             decision = JSON.parse(cleanJson);
                         } catch (err) {
                             log('Failed to parse LLM JSON: ' + err.message + '\nRaw: ' + rawReply);
-                            // Fallback
                             decision = { action: 'reply', priority: 'Medium', replyText: "I'm sorry, I encountered an error processing your message. Sufiyan will get back to you later.", summary: "Error parsing LLM output." };
                         }
 
-                        // Log activity to the App Inbox
+                        // Emit activity to the App Inbox
                         socket.emit('activity', {
                             type: decision.action === 'reply' ? 'reply' : 'ignore',
                             priority: decision.priority,
-                            title: `From ${num} (${decision.priority})`,
+                            title: decision.priority === 'High' ? `🚨 ${displayName}` : decision.action === 'ignore' ? `🔕 ${displayName}` : `💬 ${displayName}`,
                             message: decision.summary,
-                            time: new Date().toLocaleTimeString()
+                            replyText: decision.replyText || '',
+                            time: new Date().toLocaleTimeString(),
+                            contact: displayName,
+                            number: num
                         });
 
                         if (decision.action === 'reply' && decision.replyText) {
-                            // Store the reply in history
                             chatHistories[jid].push({ role: 'assistant', content: decision.replyText });
                             
                             const delay = Math.min(decision.replyText.length * 15, 1500);
@@ -238,10 +344,9 @@ io.on('connection', (socket) => {
                             
                             try { await sock.sendPresenceUpdate('paused', jid); } catch(_) {}
                             await sock.sendMessage(jid, { text: decision.replyText });
-                            log('Replied to ' + num + ': ' + decision.replyText.substring(0, 60));
+                            log('Replied to ' + displayName + ': ' + decision.replyText.substring(0, 60));
                         } else {
-                            log(`Ignored message from ${num} based on LLM decision (Priority: ${decision.priority}).`);
-                            // We don't add ignored text to the assistant history because she didn't say anything
+                            log(`Ignored message from ${displayName} (Priority: ${decision.priority}).`);
                         }
                         
                     } catch (e) {
@@ -250,7 +355,6 @@ io.on('connection', (socket) => {
                 });
             }
             
-            // Start the initial connection
             connectToWhatsApp();
             
         } catch (e) {
@@ -273,8 +377,6 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         console.log(`Client disconnected: ${socket.id}`);
-        // We don't stop the bot when the client disconnects! That's the whole point of a server backend.
-        // It keeps running in the background.
     });
 });
 
