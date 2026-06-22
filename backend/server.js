@@ -198,28 +198,35 @@ Rules for sending:
             // Pattern 3: Just look for {"to":..., "text":...} anywhere
             if (!sendMatch) sendMatch = reply.match(/\{"to"\s*:\s*"(\d+)"\s*,\s*"text"\s*:\s*"(.*?)"\}/s);
 
-            if (sendMatch && sock) {
-                try {
-                    // If pattern 3 matched (no JSON group), build it
-                    if (sendMatch[2] !== undefined) {
-                        sendCmd = { to: sendMatch[1], text: sendMatch[2] };
-                    } else {
-                        sendCmd = JSON.parse(sendMatch[1]);
+            if (sendMatch) {
+                if (!sock) {
+                    // Bot isn't started yet! Strip the tags and warn.
+                    reply = reply.replace(/\[?\s*SEND\s*\]?\s*\{.*?\}\s*\[?\s*\/?\s*SEND\s*\]?/gs, '').trim();
+                    reply = reply.replace(/\{"to"\s*:\s*".*?"\s*,\s*"text"\s*:\s*".*?"\}/gs, '').trim();
+                    reply += '\n\n⚠️ I am not connected to WhatsApp right now! Please go to the Dashboard and press "Start Bot" first.';
+                } else {
+                    try {
+                        // If pattern 3 matched (no JSON group), build it
+                        if (sendMatch[2] !== undefined) {
+                            sendCmd = { to: sendMatch[1], text: sendMatch[2] };
+                        } else {
+                            sendCmd = JSON.parse(sendMatch[1]);
+                        }
+                        
+                        const targetJid = sendCmd.to + '@s.whatsapp.net';
+                        await sock.sendMessage(targetJid, { text: sendCmd.text });
+                        log(`✅ Message sent to ${sendCmd.to}: "${sendCmd.text.substring(0, 50)}"`);
+                        
+                        // Strip ALL send-related blocks from the visible reply
+                        reply = reply.replace(/\[?\s*SEND\s*\]?\s*\{.*?\}\s*\[?\s*\/?\s*SEND\s*\]?/gs, '').trim();
+                        reply = reply.replace(/\{"to"\s*:\s*".*?"\s*,\s*"text"\s*:\s*".*?"\}/gs, '').trim();
+                        if (!reply) reply = `Done! I've sent "${sendCmd.text}" to ${sendCmd.to}. ✅`;
+                    } catch (sendErr) {
+                        log('Send message error: ' + sendErr.message);
+                        reply = reply.replace(/\[?\s*SEND\s*\]?\s*\{.*?\}\s*\[?\s*\/?\s*SEND\s*\]?/gs, '').trim();
+                        reply = reply.replace(/\{"to"\s*:\s*".*?"\s*,\s*"text"\s*:\s*".*?"\}/gs, '').trim();
+                        reply += '\n\n⚠️ Sorry, I couldn\'t send that message. Make sure the bot is connected to WhatsApp first.';
                     }
-                    
-                    const targetJid = sendCmd.to + '@s.whatsapp.net';
-                    await sock.sendMessage(targetJid, { text: sendCmd.text });
-                    log(`✅ Message sent to ${sendCmd.to}: "${sendCmd.text.substring(0, 50)}"`);
-                    
-                    // Strip ALL send-related blocks from the visible reply
-                    reply = reply.replace(/\[?\s*SEND\s*\]?\s*\{.*?\}\s*\[?\s*\/?\s*SEND\s*\]?/gs, '').trim();
-                    reply = reply.replace(/\{"to"\s*:\s*".*?"\s*,\s*"text"\s*:\s*".*?"\}/gs, '').trim();
-                    if (!reply) reply = `Done! I've sent "${sendCmd.text}" to ${sendCmd.to}. ✅`;
-                } catch (sendErr) {
-                    log('Send message error: ' + sendErr.message);
-                    reply = reply.replace(/\[?\s*SEND\s*\]?\s*\{.*?\}\s*\[?\s*\/?\s*SEND\s*\]?/gs, '').trim();
-                    reply = reply.replace(/\{"to"\s*:\s*".*?"\s*,\s*"text"\s*:\s*".*?"\}/gs, '').trim();
-                    reply += '\n\n⚠️ Sorry, I couldn\'t send that message. Make sure the bot is connected to WhatsApp first.';
                 }
             }
 
