@@ -24,6 +24,7 @@ let openai = null;
 let chatHistories = {};
 let startTime = 0;
 let contactNames = {}; // Cache: jid -> pushName
+let activityLog = []; // Real log of what happened for Luna's direct chat
 
 let config = {
     systemPrompt: '',
@@ -78,6 +79,8 @@ io.on('connection', (socket) => {
         socket.emit('log', String(msg));
     }
 
+    let chatMessagesRef = []; // Stores Luna ↔ Sufiyan direct conversation turns
+
     socket.emit('backend_ready');
 
     socket.on('config', (data) => {
@@ -128,21 +131,30 @@ io.on('connection', (socket) => {
         const userMessage = data.message || '';
         if (!userMessage.trim()) return;
 
-        // Use a separate chat history for Luna-Sufiyan direct chat
-        if (!chatHistories['_luna_direct']) {
-            chatHistories['_luna_direct'] = [{
-                role: 'system',
-                content: `You are Luna, Sufiyan's personal AI assistant. Right now, Sufiyan himself is talking to you directly through the app. 
-He is your boss. Be warm, helpful, proactive, and speak naturally like a close assistant who knows him well.
-You can help him with:
-- Summarizing who messaged him today
-- Taking notes or reminders
-- Drafting messages to send to people
-- Answering questions
-- General conversation
+        // Build a real-data summary for Luna
+        const recentActivity = activityLog.slice(-20).map(a => `[${a.time}] ${a.contact}: ${a.summary} (${a.action})`).join('\n');
+        const activityBlock = activityLog.length > 0 
+            ? `\n\nHere is the REAL activity log of messages that actually came in today. ONLY reference these — NEVER invent messages or contacts:\n---\n${recentActivity}\n---` 
+            : `\n\nNo messages have been received yet today. If Sufiyan asks about messages, tell him honestly that no messages have come in yet.`;
 
-Keep your replies natural and conversational. Do NOT output JSON. Just respond normally like a human assistant.`
-            }];
+        // Reset direct chat each time to inject fresh activity data
+        chatHistories['_luna_direct'] = [{
+            role: 'system',
+            content: `You are Luna, Sufiyan's personal AI assistant. Sufiyan himself is talking to you directly through the app.
+He is your boss. Be warm, helpful, and speak naturally.
+
+CRITICAL RULES:
+- You MUST ONLY reference REAL data from the activity log below.
+- NEVER make up, fabricate, or hallucinate any messages, contacts, or names.
+- If no messages have come in, say so honestly: "No messages have come in yet."
+- If he asks about messages, ONLY mention contacts and summaries from the activity log.
+- You can help with: summarizing real messages, taking notes, drafting replies, general conversation.
+- Keep replies natural and conversational. Do NOT output JSON.${activityBlock}`
+        }];
+
+        // Re-add previous messages from this session
+        if (chatMessagesRef.length > 0) {
+            chatHistories['_luna_direct'] = chatHistories['_luna_direct'].concat(chatMessagesRef.slice(-20));
         }
 
         chatHistories['_luna_direct'].push({ role: 'user', content: userMessage });
@@ -155,12 +167,16 @@ Keep your replies natural and conversational. Do NOT output JSON. Just respond n
             const completion = await openai.chat.completions.create({
                 model: 'meta/llama-3.3-70b-instruct',
                 messages: chatHistories['_luna_direct'],
-                temperature: 0.7,
+                temperature: 0.5,
                 max_tokens: 500,
             });
 
             const reply = completion.choices[0].message.content.trim();
             chatHistories['_luna_direct'].push({ role: 'assistant', content: reply });
+            // Save messages for context persistence
+            chatMessagesRef.push({ role: 'user', content: userMessage });
+            chatMessagesRef.push({ role: 'assistant', content: reply });
+            if (chatMessagesRef.length > 40) chatMessagesRef = chatMessagesRef.slice(-40);
 
             socket.emit('luna_reply', { text: reply });
         } catch (e) {
@@ -262,6 +278,7 @@ Keep your replies natural and conversational. Do NOT output JSON. Just respond n
                                 contact: displayName,
                                 number: num
                             });
+                            activityLog.push({ time: new Date().toLocaleTimeString(), contact: displayName, summary: 'Sent a voice message', action: 'voice note (not replied)' });
                             return;
                         }
                         
@@ -281,6 +298,7 @@ Keep your replies natural and conversational. Do NOT output JSON. Just respond n
                                 contact: displayName,
                                 number: num
                             });
+                            activityLog.push({ time: new Date().toLocaleTimeString(), contact: displayName, summary: text.substring(0, 80), action: 'ignored (bot paused)' });
                             return;
                         }
                         
@@ -335,6 +353,15 @@ Keep your replies natural and conversational. Do NOT output JSON. Just respond n
                             contact: displayName,
                             number: num
                         });
+
+                        // Log to activityLog for Luna direct chat
+                        activityLog.push({
+                            time: new Date().toLocaleTimeString(),
+                            contact: displayName,
+                            summary: `Said: "${text.substring(0, 80)}"`,
+                            action: decision.action === 'reply' ? `Luna replied: "${(decision.replyText || '').substring(0, 80)}"` : `Ignored (${decision.priority} priority)`
+                        });
+                        if (activityLog.length > 50) activityLog = activityLog.slice(-50);
 
                         if (decision.action === 'reply' && decision.replyText) {
                             chatHistories[jid].push({ role: 'assistant', content: decision.replyText });
