@@ -25,6 +25,8 @@ let chatHistories = {};
 let startTime = 0;
 let contactNames = {}; // Cache: jid -> pushName
 let activityLog = []; // Real log of what happened for Luna's direct chat
+let messageQueue = {};
+let messageTimers = {};
 
 const MEMORY_FILE = path.join(__dirname, 'luna_memory.json');
 try {
@@ -412,75 +414,85 @@ Rules for sending:
                             return;
                         }
 
-                        // Build contact-aware system prompt
-                        const contactContext = getContactContext(num, jid);
-                        
-                        if (!chatHistories[jid]) {
-                            chatHistories[jid] = [{ 
-                                role: 'system', 
-                                content: `${config.systemPrompt}\n\n${contactContext}\nCRITICAL INSTRUCTION: You MUST reply ONLY with a valid JSON object. Do NOT include markdown blocks like \`\`\`json. Your JSON must strictly follow this structure:\n{\n  "priority": "Low|Medium|High",\n  "action": "reply|ignore",\n  "replyText": "The message to send to the user (leave empty if ignoring)",\n  "summary": "A 1-sentence summary of what this conversation is about right now"\n}\n\nRULES:\n- Low priority (Spam/Promos): action must be "ignore".\n- Medium priority (Casual/Normal): action must be "reply".\n- High priority (Emergency/Urgent/Family asking important things): action must be "reply".`
-                            }];
-                        }
-                        chatHistories[jid].push({ role: 'user', content: text });
-                        
-                        if (chatHistories[jid].length > 15) {
-                            chatHistories[jid] = [chatHistories[jid][0]].concat(chatHistories[jid].slice(-14));
-                        }
-                        
-                        try { await sock.sendPresenceUpdate('composing', jid); } catch(_) {}
-                        
-                        const completion = await openai.chat.completions.create({
-                            model: 'meta/llama-3.3-70b-instruct',
-                            messages: chatHistories[jid],
-                            temperature: 0.1,
-                            max_tokens: 300,
-                        });
-                        
-                        const rawReply = completion.choices[0].message.content.trim();
-                        
-                        let decision;
-                        try {
-                            const cleanJson = rawReply.replace(/```json/g, '').replace(/```/g, '').trim();
-                            decision = JSON.parse(cleanJson);
-                        } catch (err) {
-                            log('Failed to parse LLM JSON: ' + err.message + '\nRaw: ' + rawReply);
-                            decision = { action: 'reply', priority: 'Medium', replyText: "I'm sorry, I encountered an error processing your message. Sufiyan will get back to you later.", summary: "Error parsing LLM output." };
-                        }
+                        // Debounce messages to prevent double-replies
+                        if (!messageQueue[jid]) messageQueue[jid] = [];
+                        messageQueue[jid].push(text);
 
-                        // Emit activity to the App Inbox
-                        socket.emit('activity', {
-                            type: decision.action === 'reply' ? 'reply' : 'ignore',
-                            priority: decision.priority,
-                            title: decision.priority === 'High' ? `🚨 ${displayName}` : decision.action === 'ignore' ? `🔕 ${displayName}` : `💬 ${displayName}`,
-                            message: decision.summary,
-                            replyText: decision.replyText || '',
-                            time: new Date().toLocaleTimeString(),
-                            contact: displayName,
-                            number: num
-                        });
+                        clearTimeout(messageTimers[jid]);
+                        messageTimers[jid] = setTimeout(async () => {
+                            const combinedText = messageQueue[jid].join('\n');
+                            messageQueue[jid] = []; // clear queue for this contact
 
-                        // Log to activityLog for Luna direct chat
-                        activityLog.push({
-                            time: new Date().toLocaleTimeString(),
-                            contact: displayName,
-                            summary: `Said: "${text.substring(0, 80)}"`,
-                            action: decision.action === 'reply' ? `Luna replied: "${(decision.replyText || '').substring(0, 80)}"` : `Ignored (${decision.priority} priority)`
-                        });
-                        if (activityLog.length > 50) activityLog = activityLog.slice(-50);
-                        saveMemory();
-
-                        if (decision.action === 'reply' && decision.replyText) {
-                            chatHistories[jid].push({ role: 'assistant', content: decision.replyText });
+                            // Build contact-aware system prompt
+                            const contactContext = getContactContext(num, jid);
                             
-                            const delay = Math.min(decision.replyText.length * 15, 1500);
-                            await new Promise(r => setTimeout(r, delay));
+                            if (!chatHistories[jid]) {
+                                chatHistories[jid] = [{ 
+                                    role: 'system', 
+                                    content: `${config.systemPrompt}\n\n${contactContext}\nCRITICAL INSTRUCTION: You MUST reply ONLY with a valid JSON object. Do NOT include markdown blocks like \`\`\`json.\n\nLANGUAGE RULES:\n- Reply naturally in the EXACT same language and style as the user (e.g., Hinglish, Urdu, slang, or English).\n- Act like a human assistant, not a robot. Keep responses brief like a text message.\n- Do NOT start messages with "Hello, this is Luna" or similar robotic greetings.\n\nYour JSON must strictly follow this structure:\n{\n  "priority": "Low|Medium|High",\n  "action": "reply|ignore",\n  "replyText": "The message to send to the user (leave empty if ignoring)",\n  "summary": "A 1-sentence summary of what this conversation is about right now"\n}\n\nRULES:\n- Low priority (Spam/Promos): action must be "ignore".\n- Medium priority (Casual/Normal): action must be "reply".\n- High priority (Emergency/Urgent/Family asking important things): action must be "reply".`
+                                }];
+                            }
+                            chatHistories[jid].push({ role: 'user', content: combinedText });
                             
-                            try { await sock.sendPresenceUpdate('paused', jid); } catch(_) {}
-                            await sock.sendMessage(jid, { text: decision.replyText });
-                            log('Replied to ' + displayName + ': ' + decision.replyText.substring(0, 60));
-                        } else {
-                            log(`Ignored message from ${displayName} (Priority: ${decision.priority}).`);
-                        }
+                            if (chatHistories[jid].length > 15) {
+                                chatHistories[jid] = [chatHistories[jid][0]].concat(chatHistories[jid].slice(-14));
+                            }
+                            
+                            try { await sock.sendPresenceUpdate('composing', jid); } catch(_) {}
+                            
+                            const completion = await openai.chat.completions.create({
+                                model: 'meta/llama-3.3-70b-instruct',
+                                messages: chatHistories[jid],
+                                temperature: 0.1,
+                                max_tokens: 300,
+                            });
+                            
+                            const rawReply = completion.choices[0].message.content.trim();
+                            
+                            let decision;
+                            try {
+                                const cleanJson = rawReply.replace(/```json/g, '').replace(/```/g, '').trim();
+                                decision = JSON.parse(cleanJson);
+                            } catch (err) {
+                                log('Failed to parse LLM JSON: ' + err.message + '\nRaw: ' + rawReply);
+                                decision = { action: 'reply', priority: 'Medium', replyText: "I'm sorry, I encountered an error processing your message. Sufiyan will get back to you later.", summary: "Error parsing LLM output." };
+                            }
+
+                            // Emit activity to the App Inbox
+                            socket.emit('activity', {
+                                type: decision.action === 'reply' ? 'reply' : 'ignore',
+                                priority: decision.priority,
+                                title: decision.priority === 'High' ? `🚨 ${displayName}` : decision.action === 'ignore' ? `🔕 ${displayName}` : `💬 ${displayName}`,
+                                message: decision.summary,
+                                replyText: decision.replyText || '',
+                                time: new Date().toLocaleTimeString(),
+                                contact: displayName,
+                                number: num
+                            });
+
+                            // Log to activityLog for Luna direct chat
+                            activityLog.push({
+                                time: new Date().toLocaleTimeString(),
+                                contact: displayName,
+                                summary: `Said: "${combinedText.substring(0, 80)}"`,
+                                action: decision.action === 'reply' ? `Luna replied: "${(decision.replyText || '').substring(0, 80)}"` : `Ignored (${decision.priority} priority)`
+                            });
+                            if (activityLog.length > 50) activityLog = activityLog.slice(-50);
+                            saveMemory();
+
+                            if (decision.action === 'reply' && decision.replyText) {
+                                chatHistories[jid].push({ role: 'assistant', content: decision.replyText });
+                                
+                                const delay = Math.min(decision.replyText.length * 15, 1500);
+                                await new Promise(r => setTimeout(r, delay));
+                                
+                                try { await sock.sendPresenceUpdate('paused', jid); } catch(_) {}
+                                await sock.sendMessage(jid, { text: decision.replyText });
+                                log('Replied to ' + displayName + ': ' + decision.replyText.substring(0, 60));
+                            } else {
+                                log(`Ignored message from ${displayName} (Priority: ${decision.priority}).`);
+                            }
+                        }, 3000); // 3-second debounce
                         
                     } catch (e) {
                         log('Message error: ' + e.message);
