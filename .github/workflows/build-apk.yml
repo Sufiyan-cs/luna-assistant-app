@@ -30,6 +30,52 @@ jobs:
       - name: Install Root Dependencies
         run: npm install
 
+      - name: Fix deprecated libraries for modern Gradle
+        run: |
+          # Fix @react-native-voice/voice - replace jcenter, remove old deps
+          cat > node_modules/@react-native-voice/voice/android/build.gradle << 'GRADLE_EOF'
+          apply plugin: 'com.android.library'
+
+          repositories {
+              mavenLocal()
+              mavenCentral()
+              google()
+          }
+
+          def DEFAULT_COMPILE_SDK_VERSION = 28
+          def DEFAULT_BUILD_TOOLS_VERSION = "28.0.3"
+          def DEFAULT_TARGET_SDK_VERSION = 28
+
+          android {
+              compileSdkVersion rootProject.hasProperty('compileSdkVersion') ? rootProject.compileSdkVersion : DEFAULT_COMPILE_SDK_VERSION
+              buildToolsVersion rootProject.hasProperty('buildToolsVersion') ? rootProject.buildToolsVersion : DEFAULT_BUILD_TOOLS_VERSION
+
+              defaultConfig {
+                  minSdkVersion 15
+                  targetSdkVersion rootProject.hasProperty('targetSdkVersion') ? rootProject.targetSdkVersion : DEFAULT_TARGET_SDK_VERSION
+                  versionCode 1
+                  versionName "1.0"
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+                  }
+              }
+          }
+
+          dependencies {
+              implementation fileTree(dir: 'libs', include: ['*.jar'])
+              testImplementation 'junit:junit:4.12'
+              implementation 'com.facebook.react:react-native:+'
+          }
+          GRADLE_EOF
+
+          # Fix react-native-tts - replace jcenter
+          sed -i 's/jcenter()/mavenCentral()/g' node_modules/react-native-tts/android/build.gradle
+
+          echo "✅ Library build.gradle files patched successfully"
+
       - name: Build Android Release APK
         run: |
           cd android

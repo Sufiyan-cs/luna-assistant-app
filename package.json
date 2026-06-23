@@ -13,7 +13,6 @@
   "dependencies": {
     "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "^3.1.1",
-    "@react-native-voice/voice": "^3.2.4",
     "@react-native/new-app-screen": "0.86.0",
     "react": "19.2.3",
     "react-native": "0.86.0",
@@ -22,6 +21,7 @@
     "react-native-safe-area-context": "^5.5.2",
     "react-native-svg": "^15.15.5",
     "react-native-tts": "^4.1.1",
+    "@react-native-voice/voice": "^3.2.4",
     "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
