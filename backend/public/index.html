@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luna Voice Testing</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #1a1a2e; color: white; margin: 0; }
+        h1 { margin-bottom: 10px; }
+        p { color: #a0a0b0; margin-bottom: 40px; }
+        button { background-color: #e94560; color: white; border: none; border-radius: 50%; width: 150px; height: 150px; font-size: 20px; font-weight: bold; cursor: pointer; transition: 0.2s; box-shadow: 0 4px 15px rgba(233, 69, 96, 0.4); }
+        button:active { transform: scale(0.95); background-color: #d1304d; }
+        button.recording { animation: pulse 1.5s infinite; background-color: #ff2a2a; }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(255, 42, 42, 0.7); } 70% { box-shadow: 0 0 0 20px rgba(255, 42, 42, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 42, 42, 0); } }
+        #status { margin-top: 30px; font-size: 18px; color: #4ecca3; font-weight: bold; min-height: 24px; }
+    </style>
+</head>
+<body>
+
+    <h1>🎙️ Luna Voice Test</h1>
+    <p>Using NVIDIA Whisper (STT) & Chatterbox (TTS)</p>
+
+    <button id="recordBtn">Hold to<br>Speak</button>
+    <div id="status">Ready</div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        const recordBtn = document.getElementById('recordBtn');
+        const statusEl = document.getElementById('status');
+        
+        async function setupMic() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    statusEl.innerText = "Processing (NVIDIA APIs)...";
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    audioChunks = []; // reset
+                    
+                    const formData = new FormData();
+                    formData.append('audio', audioBlob, 'recording.webm');
+                    
+                    try {
+                        const response = await fetch('/api/voice', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        if (!response.ok) throw new Error(await response.text());
+                        
+                        const data = await response.json();
+                        statusEl.innerText = "Playing reply: " + data.text;
+                        
+                        // Use native browser TTS
+                        const utterance = new SpeechSynthesisUtterance(data.text);
+                        const voices = speechSynthesis.getVoices();
+                        // Specifically target Microsoft Zira (Windows default female) or Google UK Female
+                        const bestVoice = voices.find(v => v.name.includes('Zira')) || 
+                                          voices.find(v => v.name.includes('Google UK English Female')) || 
+                                          voices.find(v => v.name.includes('Female')) || 
+                                          voices[0];
+                        
+                        utterance.voice = bestVoice;
+                        utterance.rate = 1.0;
+                        utterance.pitch = 1.2; // Slightly higher pitch for a more natural female sound
+
+                        speechSynthesis.speak(utterance);
+                        
+                        utterance.onend = () => {
+                            statusEl.innerText = "Ready";
+                        };
+                    } catch (e) {
+                        statusEl.innerText = "Error: " + e.message;
+                        console.error(e);
+                    }
+                };
+            } catch (err) {
+                statusEl.innerText = "Mic access denied!";
+                console.error(err);
+            }
+        }
+
+        setupMic();
+
+        recordBtn.addEventListener('mousedown', () => {
+            if (mediaRecorder && mediaRecorder.state === 'inactive') {
+                audioChunks = [];
+                mediaRecorder.start();
+                recordBtn.classList.add('recording');
+                recordBtn.innerHTML = "Recording...<br>Release to Send";
+                statusEl.innerText = "Listening...";
+            }
+        });
+
+        recordBtn.addEventListener('mouseup', () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                recordBtn.classList.remove('recording');
+                recordBtn.innerHTML = "Hold to<br>Speak";
+            }
+        });
+        
+        // Touch support for mobile browsers
+        recordBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (mediaRecorder && mediaRecorder.state === 'inactive') {
+                audioChunks = [];
+                mediaRecorder.start();
+                recordBtn.classList.add('recording');
+                recordBtn.innerHTML = "Recording...<br>Release to Send";
+                statusEl.innerText = "Listening...";
+            }
+        });
+        
+        recordBtn.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                mediaRecorder.stop();
+                recordBtn.classList.remove('recording');
+                recordBtn.innerHTML = "Hold to<br>Speak";
+            }
+        });
+    </script>
+</body>
+</html>

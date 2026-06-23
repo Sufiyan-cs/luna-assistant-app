@@ -17,6 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import QRCode from 'react-native-qrcode-svg';
 import { io, Socket } from 'socket.io-client';
 import notifee, { AndroidImportance } from '@notifee/react-native';
+import CallScreen from './CallScreen';
 
 // ---- Types ----
 export interface Activity {
@@ -130,7 +131,9 @@ function LunaApp() {
   const [chatInput, setChatInput] = useState('');
   const [isLunaTyping, setIsLunaTyping] = useState(false);
   
-  // Settings
+  // Voice Call
+  const [isCalling, setIsCalling] = useState(false);
+  const [callData, setCallData] = useState({ name: '', reason: '' });
   const [backendUrl, setBackendUrl] = useState('');
   const [nvidiaApiKey, setNvidiaApiKey] = useState('');
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT);
@@ -285,6 +288,13 @@ function LunaApp() {
       }
     });
 
+    socket.on('incoming_call', (data) => {
+      addLog(`Incoming call from ${data.contact}...`);
+      setCallData({ name: data.contact, reason: data.reason });
+      setIsCalling(true);
+      displayNotification('🚨 Luna Emergency Call', `Incoming call regarding ${data.contact}`);
+    });
+
     socket.on('activity', (act: Activity) => {
       addActivity(act);
       if (act.priority === 'High' || act.type === 'voice') {
@@ -377,6 +387,17 @@ function LunaApp() {
     if (status.includes('Connecting') || status.includes('QR')) return C.orange;
     return C.textDim;
   };
+
+  if (isCalling) {
+    return (
+      <CallScreen
+        socket={socketRef}
+        callerName={callData.name}
+        reason={callData.reason}
+        onEndCall={() => setIsCalling(false)}
+      />
+    );
+  }
 
   return (
     <SafeAreaView style={s.container}>
@@ -474,6 +495,14 @@ function LunaApp() {
                 <Text style={s.btnLabel}>Logout</Text>
               </TouchableOpacity>
             </View>
+
+            {/* Call Luna Button */}
+            <TouchableOpacity style={[s.startBtn, { backgroundColor: C.accent, marginTop: 15 }]} onPress={() => {
+              setCallData({ name: 'Me (Test)', reason: 'Manual Test Call' });
+              setIsCalling(true);
+            }}>
+              <Text style={s.btnLabel}>📞 Call Luna</Text>
+            </TouchableOpacity>
           </ScrollView>
         )}
 
