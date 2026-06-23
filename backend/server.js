@@ -265,76 +265,63 @@ Rules for sending:
         }
     });
 
-    // Handle Voice Calls from App
-    socket.on('voice_audio', async (data) => {
-        if (!config.nvidiaApiKey) {
-            socket.emit('luna_reply', { text: 'API keys missing.' });
-            return;
-        }
+
+    // Handle Voice Calls from App (text already transcribed by Android STT on device)
+    socket.on('voice_text', async (data) => {
+        const userText = data.text || '';
+        if (!userText.trim()) return;
+
+        log(`[Voice] Sufiyan said: ${userText}`);
+
         try {
-            log('Received audio chunk from App. Processing...');
+            // Use NVIDIA for response (same as chat), or Groq if configured
+            const GROQ_KEY = config.groqApiKey;
             
-            // 1. Save buffer to temp file
-            const tempFileName = `temp_audio_${Date.now()}.webm`;
-            const tempFilePath = path.join(__dirname, tempFileName);
-            fs.writeFileSync(tempFilePath, Buffer.from(data.audioBase64, 'base64'));
+            let replyText = '';
 
-            // Use Groq API Key
-            const GROQ_API_KEY = config.groqApiKey;
-
-            if (!GROQ_API_KEY) {
-                log('Voice call failed: Missing GROQ_API_KEY from frontend settings.');
-                socket.emit('voice_reply', { text: 'Server configuration error: Missing Groq API Key in Settings.' });
-                return;
+            if (GROQ_KEY) {
+                // Groq LLaMA — ultra fast
+                const llamaRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${GROQ_KEY}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: 'llama-3.3-70b-versatile',
+                        messages: [
+                            { role: 'system', content: `You are Luna, Sufiyan's personal AI assistant on a live voice call. Keep replies very short, natural, and conversational — 1 or 2 sentences max. Do NOT use emojis or special characters. Speak like a calm, helpful assistant. Sufiyan's contacts: ${Object.entries(config.relationships).map(([n,l]) => `${n}=${l}`).join(', ')}` },
+                            { role: 'user', content: userText }
+                        ],
+                        max_tokens: 120,
+                        temperature: 0.6,
+                    })
+                });
+                if (!llamaRes.ok) throw new Error(await llamaRes.text());
+                const llamaData = await llamaRes.json();
+                replyText = llamaData.choices[0].message.content;
+            } else if (openai) {
+                // Fallback: NVIDIA
+                const completion = await openai.chat.completions.create({
+                    model: 'meta/llama-3.3-70b-instruct',
+                    messages: [
+                        { role: 'system', content: 'You are Luna on a live voice call. Reply in 1-2 short, natural sentences. No emojis.' },
+                        { role: 'user', content: userText }
+                    ],
+                    max_tokens: 120,
+                    temperature: 0.6,
+                });
+                replyText = completion.choices[0].message.content.trim();
+            } else {
+                replyText = 'Please set an API key in Settings first.';
             }
 
-            // 2. Groq Whisper STT
-            const formData = new FormData();
-            formData.append('file', fs.createReadStream(tempFilePath), { filename: 'audio.webm' });
-            formData.append('model', 'whisper-large-v3');
-            formData.append('response_format', 'json');
-
-            const whisperRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, ...formData.getHeaders() },
-                body: formData
-            });
-
-            if (!whisperRes.ok) throw new Error(await whisperRes.text());
-            const whisperData = await whisperRes.json();
-            const userText = whisperData.text || "Could not transcribe";
-            log(`[Voice] Sufiyan: ${userText}`);
-
-            // Cleanup temp file
-            fs.unlinkSync(tempFilePath);
-
-            // 3. Groq LLaMA 3.3 for ultra-low latency response
-            const llamaRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: 'llama-3.3-70b-versatile',
-                    messages: [
-                        { role: 'system', content: 'You are Luna. You are currently on a live voice call with Sufiyan. Keep your replies extremely short, conversational, and natural. Do NOT use emojis, as they cannot be spoken. Maximum 1 or 2 sentences.' },
-                        { role: 'user', content: userText }
-                    ]
-                })
-            });
-
-            if (!llamaRes.ok) throw new Error(await llamaRes.text());
-            const llamaData = await llamaRes.json();
-            const replyText = llamaData.choices[0].message.content;
-            
-            log(`[Voice] Luna: ${replyText}`);
-            
-            // Send text back to app for Native TTS
+            log(`[Voice] Luna replied: ${replyText}`);
             socket.emit('voice_reply', { text: replyText });
 
         } catch (e) {
             log('Voice processing error: ' + e.message);
-            socket.emit('voice_reply', { text: "Sorry, I had trouble processing your voice." });
+            socket.emit('voice_reply', { text: 'Sorry, I had trouble with that. Please try again.' });
         }
     });
+
 
     socket.on('start', async () => {
         log('Starting WhatsApp connection process...');
