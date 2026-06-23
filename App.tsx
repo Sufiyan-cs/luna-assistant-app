@@ -136,6 +136,7 @@ function LunaApp() {
   const [callData, setCallData] = useState({ name: '', reason: '' });
   const [backendUrl, setBackendUrl] = useState('');
   const [nvidiaApiKey, setNvidiaApiKey] = useState('');
+  const [groqApiKey, setGroqApiKey] = useState('');
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT);
   const [excludedNumbers, setExcludedNumbers] = useState('');
   const [relationships, setRelationships] = useState('');
@@ -192,6 +193,7 @@ function LunaApp() {
       try {
         const url = await AsyncStorage.getItem('backendUrl');
         const key = await AsyncStorage.getItem('nvidiaApiKey');
+        const groqKey = await AsyncStorage.getItem('groqApiKey');
         const prompt = await AsyncStorage.getItem('systemPrompt');
         const excluded = await AsyncStorage.getItem('excludedNumbers');
         const rels = await AsyncStorage.getItem('relationships');
@@ -205,6 +207,7 @@ function LunaApp() {
         }
         
         if (key) setNvidiaApiKey(key);
+        if (groqKey) setGroqApiKey(groqKey);
         if (prompt) setSystemPrompt(prompt);
         if (excluded) setExcludedNumbers(excluded);
         if (rels) setRelationships(rels);
@@ -264,7 +267,7 @@ function LunaApp() {
 
     socket.on('backend_ready', () => {
       addLog('Backend is ready.');
-      sendConfig(socket, nvidiaApiKey, systemPrompt, excludedNumbers, relationships);
+      sendConfig(socket, nvidiaApiKey, groqApiKey, systemPrompt, excludedNumbers, relationships);
     });
 
     socket.on('log', (msg) => {
@@ -313,11 +316,12 @@ function LunaApp() {
     });
   };
 
-  const sendConfig = (socket: Socket | null, key: string, prompt: string, excluded: string, rels: string) => {
+  const sendConfig = (socket: Socket | null, key: string, groqKey: string, prompt: string, excluded: string, rels: string) => {
     if (!socket || !socket.connected) return;
     const excludeArr = excluded.split(',').map(n => n.trim()).filter(n => n);
     socket.emit('config', {
       nvidiaApiKey: key,
+      groqApiKey: groqKey,
       systemPrompt: prompt,
       excludedNumbers: excludeArr,
       isPaused,
@@ -329,13 +333,14 @@ function LunaApp() {
     try {
       await AsyncStorage.setItem('backendUrl', backendUrl);
       await AsyncStorage.setItem('nvidiaApiKey', nvidiaApiKey);
+      await AsyncStorage.setItem('groqApiKey', groqApiKey);
       await AsyncStorage.setItem('systemPrompt', systemPrompt);
       await AsyncStorage.setItem('excludedNumbers', excludedNumbers);
       await AsyncStorage.setItem('relationships', relationships);
       addLog('Settings saved.');
       
       connectToServer(backendUrl);
-      sendConfig(socketRef, nvidiaApiKey, systemPrompt, excludedNumbers, relationships);
+      sendConfig(socketRef, nvidiaApiKey, groqApiKey, systemPrompt, excludedNumbers, relationships);
     } catch (e: any) {
       addLog('Save failed: ' + e.message);
     }
@@ -346,7 +351,7 @@ function LunaApp() {
       addLog('Cannot start: Not connected to backend.');
       return;
     }
-    sendConfig(socketRef, nvidiaApiKey, systemPrompt, excludedNumbers, relationships);
+    sendConfig(socketRef, nvidiaApiKey, groqApiKey, systemPrompt, excludedNumbers, relationships);
     addLog('Requesting bot start...');
     socketRef.emit('start');
   };
@@ -599,6 +604,9 @@ function LunaApp() {
             
             <Text style={s.label}>NVIDIA API Key</Text>
             <TextInput style={s.input} value={nvidiaApiKey} onChangeText={setNvidiaApiKey} placeholder="nvapi-..." placeholderTextColor={C.textMuted} secureTextEntry autoCapitalize="none" />
+
+            <Text style={s.label}>Groq API Key (For Voice Calls)</Text>
+            <TextInput style={s.input} value={groqApiKey} onChangeText={setGroqApiKey} placeholder="gsk_..." placeholderTextColor={C.textMuted} secureTextEntry autoCapitalize="none" />
 
             <Text style={s.label}>Relationships</Text>
             <Text style={s.labelHint}>Format: number=label, separated by commas</Text>

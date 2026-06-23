@@ -111,6 +111,7 @@ io.on('connection', (socket) => {
                 systemPrompt: data.systemPrompt || config.systemPrompt,
                 excludedNumbers: data.excludedNumbers || config.excludedNumbers,
                 nvidiaApiKey: data.nvidiaApiKey || config.nvidiaApiKey,
+                groqApiKey: data.groqApiKey || config.groqApiKey,
                 isPaused: data.isPaused !== undefined ? data.isPaused : config.isPaused,
                 relationships: data.relationships || config.relationships
             };
@@ -279,11 +280,11 @@ Rules for sending:
             fs.writeFileSync(tempFilePath, Buffer.from(data.audioBase64, 'base64'));
 
             // Use Groq API Key
-            const GROQ_API_KEY = process.env.GROQ_API_KEY;
+            const GROQ_API_KEY = config.groqApiKey;
 
             if (!GROQ_API_KEY) {
-                log('Voice call failed: Missing GROQ_API_KEY in environment variables.');
-                socket.emit('voice_reply', { text: 'Server configuration error: Missing Groq API Key.' });
+                log('Voice call failed: Missing GROQ_API_KEY from frontend settings.');
+                socket.emit('voice_reply', { text: 'Server configuration error: Missing Groq API Key in Settings.' });
                 return;
             }
 
