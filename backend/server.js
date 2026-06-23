@@ -360,15 +360,17 @@ Rules for sending:
                             log('Disconnected (code: ' + (code || '?') + ')');
                             socket.emit('status', 'disconnected');
                             
-                            if (code !== DisconnectReason.loggedOut) {
-                                log('Reconnecting in 3s...');
+                            if (code === DisconnectReason.loggedOut || code === 440) {
+                                // 401 = logged out, 440 = connection replaced — both need fresh login
+                                log(code === 440 ? 'Connection replaced — clearing session for fresh QR...' : 'Logged out — clearing session...');
+                                socket.emit('status', 'logged_out');
+                                try { fs.rmSync(authFolder, { recursive: true, force: true }); } catch(_) {}
+                            } else {
+                                log('Reconnecting in 5s...');
                                 setTimeout(() => {
                                     socket.emit('log', 'Attempting reconnect...');
                                     connectToWhatsApp();
-                                }, 3000);
-                            } else {
-                                socket.emit('status', 'logged_out');
-                                try { fs.rmSync(authFolder, { recursive: true, force: true }); } catch(_) {}
+                                }, 5000);
                             }
                         } else if (update.connection === 'open') {
                             log('Luna is ONLINE! ✅');
