@@ -15,7 +15,8 @@ interface CallScreenProps {
 }
 
 export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', reason }: CallScreenProps) {
-  const [status, setStatus] = useState('Connecting...');
+  const [callState, setCallState] = useState<'incoming' | 'active'>('incoming');
+  const [status, setStatus] = useState('Incoming Call...');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isListening, setIsListening] = useState(false);
 
@@ -30,39 +31,48 @@ export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', 
         Animated.timing(pulseAnim, { toValue: 1,    duration: 700, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
       ]),
     );
-    loop.start();
+    if (callState === 'active') {
+      loop.start();
+    } else {
+      // Fast pulse for ringing
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.1, duration: 400, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
+          Animated.timing(pulseAnim, { toValue: 1,    duration: 400, useNativeDriver: true, easing: Easing.inOut(Easing.ease) }),
+        ])
+      ).start();
+    }
     return () => loop.stop();
-  }, [pulseAnim]);
+  }, [pulseAnim, callState]);
 
-  // ── TTS setup ─────────────────────────────────────────────────────────────────
+  // ── Call Active Setup ──────────────────────────────────────────────────────────
   useEffect(() => {
+    if (callState !== 'active') return;
+
+    // TTS Setup
     Tts.setDefaultRate(0.48);
     Tts.setDefaultPitch(1.0);
 
     Tts.voices().then(voices => {
-      // Prefer an English male voice — clear and natural
+      // Prefer an English female voice if available, otherwise just english
       const pick = voices.find(v =>
-        v.language?.startsWith('en') && !v.name?.toLowerCase().includes('female'),
+        v.language?.startsWith('en') && v.name?.toLowerCase().includes('female'),
       ) || voices.find(v => v.language?.startsWith('en'));
       if (pick) Tts.setDefaultVoice(pick.id);
     });
 
-    Tts.addEventListener('tts-start',  () => setIsSpeaking(true));
-    Tts.addEventListener('tts-finish', () => {
+    const onStart = () => setIsSpeaking(true);
+    const onFinish = () => {
       setIsSpeaking(false);
       if (!isProcessing.current) startListening();
-    });
-    Tts.addEventListener('tts-error',  () => setIsSpeaking(false));
-
-    return () => {
-      Tts.removeAllListeners('tts-start');
-      Tts.removeAllListeners('tts-finish');
-      Tts.removeAllListeners('tts-error');
     };
-  }, []);
+    const onError = () => setIsSpeaking(false);
 
-  // ── Voice recognition setup ───────────────────────────────────────────────────
-  useEffect(() => {
+    Tts.addEventListener('tts-start', onStart);
+    Tts.addEventListener('tts-finish', onFinish);
+    Tts.addEventListener('tts-error', onError);
+
+    // Voice setup
     Voice.onSpeechStart   = () => { setIsListening(true);  setStatus('Listening...'); };
     Voice.onSpeechEnd     = () => { setIsListening(false); setStatus('Processing...'); };
     Voice.onSpeechResults = onSpeechResult;
@@ -71,19 +81,20 @@ export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', 
       setStatus('Tap to speak');
     };
 
-    // Socket: receive Luna's reply as text → speak it
-    socket?.on('voice_reply', (data: { text: string }) => {
+    // Socket
+    const handleVoiceReply = (data: { text: string }) => {
       isProcessing.current = false;
       setStatus('Luna speaking...');
       Tts.speak(data.text);
-    });
+    };
+    socket?.on('voice_reply', handleVoiceReply);
 
+    // Start
     requestMicPermission().then(granted => {
       if (granted) {
         setStatus('Tap to speak');
-        // Kick off with a greeting
         const greet = reason
-          ? `Hi Sufiyan, there is something important about ${reason}. How can I help you?`
+          ? `Hi Sufiyan, I am calling about ${reason}. How can I help?`
           : `Hi Sufiyan, I am Luna. How can I help you?`;
         Tts.speak(greet);
       } else {
@@ -92,11 +103,14 @@ export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', 
     });
 
     return () => {
-      Voice.destroy().then(Voice.removeAllListeners);
+      Tts.removeAllListeners('tts-start');
+      Tts.removeAllListeners('tts-finish');
+      Tts.removeAllListeners('tts-error');
+      try { Voice.destroy().then(Voice.removeAllListeners); } catch (e) {}
       Tts.stop();
-      socket?.off('voice_reply');
+      socket?.off('voice_reply', handleVoiceReply);
     };
-  }, [socket]);
+  }, [callState, socket]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   const requestMicPermission = async (): Promise<boolean> => {
@@ -130,13 +144,26 @@ export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', 
   };
 
   const handleEndCall = async () => {
-    await Voice.destroy();
-    Tts.stop();
-    onEndCall();
+    try {
+      if (callState === 'active') {
+        try { await Voice.stop(); } catch (e) {}
+        try { await Voice.destroy(); } catch (e) {}
+        Tts.stop();
+      }
+    } catch (e) {
+      console.log('Error ending call', e);
+    } finally {
+      onEndCall();
+    }
+  };
+
+  const handleAcceptCall = () => {
+    setCallState('active');
+    setStatus('Connecting...');
   };
 
   // ── UI ────────────────────────────────────────────────────────────────────────
-  const ringColor = isListening ? '#4CAF50' : isSpeaking ? '#FF9800' : '#7C4DFF';
+  const ringColor = callState === 'incoming' ? '#7C4DFF' : isListening ? '#4CAF50' : isSpeaking ? '#FF9800' : '#7C4DFF';
 
   return (
     <View style={s.container}>
@@ -146,23 +173,36 @@ export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', 
       </Animated.View>
 
       <Text style={s.name}>Luna AI</Text>
-      <Text style={s.callerLabel}>Call with {callerName}</Text>
+      <Text style={s.callerLabel}>{callState === 'incoming' ? `Incoming call...` : `Call with ${callerName}`}</Text>
       <Text style={s.statusText}>{status}</Text>
 
-      {/* Speak / Stop button */}
-      <TouchableOpacity
-        style={[s.speakBtn, isListening && s.speakBtnActive]}
-        onPressIn={startListening}
-        onPressOut={stopListening}
-        activeOpacity={0.8}
-      >
-        <Text style={s.speakBtnText}>{isListening ? '🎙️ Listening…' : '🎤 Hold to Speak'}</Text>
-      </TouchableOpacity>
+      {callState === 'incoming' ? (
+        <View style={s.actionRow}>
+          <TouchableOpacity style={[s.callBtn, s.declineBtn]} onPress={handleEndCall}>
+            <Text style={s.callBtnIcon}>📵</Text>
+            <Text style={s.callBtnText}>Decline</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[s.callBtn, s.acceptBtn]} onPress={handleAcceptCall}>
+            <Text style={s.callBtnIcon}>📞</Text>
+            <Text style={s.callBtnText}>Accept</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={s.activeCallActions}>
+          <TouchableOpacity
+            style={[s.speakBtn, isListening && s.speakBtnActive]}
+            onPressIn={startListening}
+            onPressOut={stopListening}
+            activeOpacity={0.8}
+          >
+            <Text style={s.speakBtnText}>{isListening ? '🎙️ Listening…' : '🎤 Hold to Speak'}</Text>
+          </TouchableOpacity>
 
-      {/* End Call */}
-      <TouchableOpacity style={s.endBtn} onPress={handleEndCall}>
-        <Text style={s.endBtnText}>📵 End Call</Text>
-      </TouchableOpacity>
+          <TouchableOpacity style={s.endBtn} onPress={handleEndCall}>
+            <Text style={s.endBtnText}>📵 End Call</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -173,11 +213,22 @@ const s = StyleSheet.create({
   avatar:         { width: 140, height: 140, borderRadius: 70, backgroundColor: '#1A1A2E', alignItems: 'center', justifyContent: 'center' },
   avatarText:     { fontSize: 64 },
   name:           { color: '#FFFFFF', fontSize: 28, fontWeight: '700', marginBottom: 4 },
-  callerLabel:    { color: '#9E9EC7', fontSize: 14, marginBottom: 16 },
+  callerLabel:    { color: '#9E9EC7', fontSize: 16, marginBottom: 16 },
   statusText:     { color: '#BB86FC', fontSize: 15, textAlign: 'center', marginBottom: 40, paddingHorizontal: 20 },
-  speakBtn:       { backgroundColor: '#7C4DFF', paddingHorizontal: 36, paddingVertical: 16, borderRadius: 50, marginBottom: 20 },
+  
+  // Incoming Call Actions
+  actionRow:      { flexDirection: 'row', justifyContent: 'space-between', width: '100%', paddingHorizontal: 20 },
+  callBtn:        { alignItems: 'center', justifyContent: 'center', paddingVertical: 16, paddingHorizontal: 30, borderRadius: 50, width: '45%' },
+  acceptBtn:      { backgroundColor: '#4CAF50' },
+  declineBtn:     { backgroundColor: '#B00020' },
+  callBtnIcon:    { fontSize: 24, marginBottom: 4 },
+  callBtnText:    { color: '#FFF', fontSize: 16, fontWeight: 'bold' },
+
+  // Active Call Actions
+  activeCallActions: { alignItems: 'center', width: '100%' },
+  speakBtn:       { backgroundColor: '#7C4DFF', paddingHorizontal: 36, paddingVertical: 16, borderRadius: 50, marginBottom: 20, width: '80%', alignItems: 'center' },
   speakBtnActive: { backgroundColor: '#4CAF50' },
   speakBtnText:   { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
-  endBtn:         { backgroundColor: '#B00020', paddingHorizontal: 36, paddingVertical: 14, borderRadius: 50 },
+  endBtn:         { backgroundColor: '#B00020', paddingHorizontal: 36, paddingVertical: 14, borderRadius: 50, width: '80%', alignItems: 'center' },
   endBtnText:     { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
 });
