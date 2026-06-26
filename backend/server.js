@@ -613,3 +613,16 @@ Rules for sending:
 server.listen(PORT, () => {
     console.log(`Luna Backend Server running on port ${PORT}`);
 });
+
+// Render keep-alive (prevent free tier sleeping)
+const selfUrl = process.env.RENDER_EXTERNAL_URL;
+if (selfUrl) {
+    console.log(`[Keep-Alive] Configured to ping ${selfUrl} every 14 minutes.`);
+    setInterval(() => {
+        require('https').get(selfUrl, (res) => {
+            console.log(`[Keep-Alive] Pinged self: ${res.statusCode}`);
+        }).on('error', (e) => {
+            console.error(`[Keep-Alive] Ping failed: ${e.message}`);
+        });
+    }, 14 * 60 * 1000); // 14 minutes
+}
