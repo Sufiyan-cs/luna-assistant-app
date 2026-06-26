@@ -129,9 +129,14 @@ io.on('connection', (socket) => {
                 }
             }
             log('Config updated from app.');
+            
+            // If the WhatsApp bot is already running from a previous session, tell the newly connected app
+            if (sock) {
+                log('Bot is already running. Syncing status...');
+                socket.emit('status', 'connected');
+            }
         }
     });
-
     socket.on('pause_bot', () => {
         config.isPaused = true;
         log('Luna is now PAUSED. She will ignore all messages.');
@@ -324,6 +329,12 @@ Rules for sending:
 
 
     socket.on('start', async () => {
+        if (sock) {
+            log('Bot is already running. Emitting connected status.');
+            socket.emit('status', 'connected');
+            return;
+        }
+
         log('Starting WhatsApp connection process...');
         startTime = Math.floor(Date.now() / 1000);
         chatHistories = {}; // Reset histories
