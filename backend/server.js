@@ -301,7 +301,7 @@ async function connectToWhatsApp() {
                     try { await sock.sendPresenceUpdate('composing', jid); } catch(_) {}
                     
                     const completion = await openai.chat.completions.create({
-                        model: 'meta/llama-3.3-70b-instruct',
+                        model: 'meta/llama-3.1-70b-instruct',
                         messages: chatHistories[jid],
                         temperature: 0.1,
                         max_tokens: 300,
