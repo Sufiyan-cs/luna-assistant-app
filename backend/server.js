@@ -301,11 +301,11 @@ async function connectToWhatsApp() {
                     try { await sock.sendPresenceUpdate('composing', jid); } catch(_) {}
                     
                     const completion = await openai.chat.completions.create({
-                        model: 'meta/llama-3.3-70b-instruct',
+                        model: config.useGroq ? 'llama3-70b-8192' : 'meta/llama-3.3-70b-instruct',
                         messages: chatHistories[jid],
                         temperature: 0.1,
                         max_tokens: 300,
-                    });
+                    }, { timeout: 15000 });
                     
                     const rawReply = completion.choices[0].message.content.trim();
                     
@@ -390,16 +390,29 @@ io.on('connection', (socket) => {
                 relationships: data.relationships || config.relationships
             };
             
-            if (config.nvidiaApiKey) {
+            if (config.groqApiKey) {
+                try {
+                    const { OpenAI } = require('openai');
+                    openai = new OpenAI({
+                        apiKey: config.groqApiKey,
+                        baseURL: 'https://api.groq.com/openai/v1',
+                    });
+                    config.useGroq = true;
+                    log('Groq AI client ready (Ultra-Fast Mode).');
+                } catch(e) {
+                    log('Error setting up Groq: ' + e.message);
+                }
+            } else if (config.nvidiaApiKey) {
                 try {
                     const { OpenAI } = require('openai');
                     openai = new OpenAI({
                         apiKey: config.nvidiaApiKey,
                         baseURL: 'https://integrate.api.nvidia.com/v1',
                     });
+                    config.useGroq = false;
                     log('NVIDIA AI client ready.');
                 } catch(e) {
-                    log('Error setting up OpenAI: ' + e.message);
+                    log('Error setting up NVIDIA: ' + e.message);
                 }
             }
             log('Config updated from app.');
