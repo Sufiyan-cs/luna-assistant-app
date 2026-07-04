@@ -304,7 +304,8 @@ async function connectToWhatsApp() {
                         model: 'nvidia/nemotron-3-super-120b-a12b',
                         messages: chatHistories[jid],
                         temperature: 0.1,
-                        max_tokens: 300,
+                        max_tokens: 1024,
+                        response_format: { type: "json_object" },
                     });
                     
                     const rawReply = completion.choices[0].message.content.trim();
