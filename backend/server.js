@@ -321,6 +321,14 @@ async function connectToWhatsApp() {
                         decision = { action: 'reply', priority: 'Medium', replyText: "I'm sorry, I encountered an error processing your message. Sufiyan will get back to you later.", summary: "Error parsing LLM output." };
                     }
 
+                    // Normalize JSON keys because Nemotron sometimes capitalizes them
+                    decision = {
+                        action: (decision.action || decision.Action || 'reply').toLowerCase(),
+                        priority: decision.priority || decision.Priority || 'Medium',
+                        replyText: decision.replyText || decision.ReplyText || decision.reply_text || '',
+                        summary: decision.summary || decision.Summary || ''
+                    };
+
                     // Emit activity to the App Inbox
                     io.emit('activity', {
                         type: decision.action === 'call_sufiyan' ? 'call' : decision.action === 'reply' ? 'reply' : 'ignore',
