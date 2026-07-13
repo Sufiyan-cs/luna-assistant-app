@@ -200,7 +200,8 @@ async function connectToWhatsApp() {
 
                 const displayName = getDisplayName(num, jid);
 
-                if (config.excludedNumbers.indexOf(num) !== -1) {
+                log(`[DEBUG] Incoming num: "${num}" | Excluded list: [${config.excludedNumbers.join(', ')}]`);
+                if (config.excludedNumbers.includes(num)) {
                     log('Skipped excluded: ' + displayName);
                     return;
                 }
@@ -436,8 +437,15 @@ io.on('connection', (socket) => {
     });
 
     socket.on('get_contacts', () => {
-        // Send the synced contacts back to the app for the UI
-        socket.emit('contacts_list', savedContacts);
+        // Merge address book contacts AND pushName contacts
+        const allContacts = { ...savedContacts };
+        for (const [jid, name] of Object.entries(contactNames)) {
+            if (!allContacts[jid] && name) {
+                allContacts[jid] = name;
+            }
+        }
+        log(`Sending ${Object.keys(allContacts).length} contacts to app (${Object.keys(savedContacts).length} synced + ${Object.keys(contactNames).length} from messages)`);
+        socket.emit('contacts_list', allContacts);
     });
 
     // Chat with Luna directly from the app

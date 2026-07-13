@@ -145,6 +145,7 @@ function LunaApp() {
   const [relationships, setRelationships] = useState('');
   const [contacts, setContacts] = useState<{[jid: string]: string}>({});
   const [isContactsModalVisible, setContactsModalVisible] = useState(false);
+  const [contactSearch, setContactSearch] = useState('');
   
   const scrollViewRef = useRef<ScrollView>(null);
   const chatScrollRef = useRef<ScrollView>(null);
@@ -626,7 +627,10 @@ function LunaApp() {
             <Text style={s.labelHint}>Numbers to never reply to (comma separated)</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 15 }}>
               <TextInput style={[s.input, { flex: 1, marginBottom: 0 }]} value={excludedNumbers} onChangeText={setExcludedNumbers} placeholder="919876543210, 918765432109" placeholderTextColor={C.textMuted} keyboardType="phone-pad" />
-              <TouchableOpacity style={s.contactsBtn} onPress={() => setContactsModalVisible(true)}>
+              <TouchableOpacity style={s.contactsBtn} onPress={() => {
+                if (socketRef) socketRef.emit('get_contacts');
+                setContactsModalVisible(true);
+              }}>
                 <Text style={s.contactsBtnText}>👥 Select</Text>
               </TouchableOpacity>
             </View>
@@ -657,15 +661,29 @@ function LunaApp() {
               <Text style={s.modalTitle}>Select Contacts to Exclude</Text>
               <Text style={s.modalSubtitle}>These contacts will be ignored by Luna.</Text>
               
+              <TextInput 
+                style={[s.input, { marginBottom: 12 }]} 
+                placeholder="🔍 Search contacts..." 
+                placeholderTextColor={C.textMuted} 
+                value={contactSearch} 
+                onChangeText={setContactSearch} 
+              />
+              
               <FlatList
-                data={Object.entries(contacts)}
+                data={Object.entries(contacts).filter(([jid, name]) => {
+                  if (!contactSearch.trim()) return true;
+                  const q = contactSearch.toLowerCase();
+                  const num = jid.split('@')[0].split(':')[0];
+                  return name.toLowerCase().includes(q) || num.includes(q);
+                })}
                 keyExtractor={([jid]) => jid}
                 renderItem={({ item: [jid, name] }) => {
                   const num = jid.split('@')[0].split(':')[0];
-                  const isExcluded = excludedNumbers.split(',').map(n => n.replace(/\D/g, '')).includes(num);
+                  const currentList = excludedNumbers.split(',').map(n => n.replace(/\D/g, '')).filter(n => n);
+                  const isExcluded = currentList.includes(num);
                   return (
-                    <TouchableOpacity style={s.contactItem} onPress={() => {
-                      let list = excludedNumbers.split(',').map(n => n.replace(/\D/g, '')).filter(n => n);
+                    <TouchableOpacity style={[s.contactItem, isExcluded && { backgroundColor: 'rgba(99,102,241,0.1)' }]} onPress={() => {
+                      let list = [...currentList];
                       if (list.includes(num)) {
                         list = list.filter(n => n !== num);
                       } else {
@@ -677,20 +695,21 @@ function LunaApp() {
                         <Text style={s.contactName}>{name}</Text>
                         <Text style={s.contactNum}>+{num}</Text>
                       </View>
-                      <Switch 
-                        value={isExcluded} 
-                        onValueChange={() => {}} 
-                        pointerEvents="none" 
-                        trackColor={{ false: C.cardBorder, true: C.accent }}
-                        thumbColor={isExcluded ? '#fff' : '#888'}
-                      />
+                      <View style={{ width: 28, height: 28, borderRadius: 14, borderWidth: 2, borderColor: isExcluded ? C.accent : '#555', backgroundColor: isExcluded ? C.accent : 'transparent', alignItems: 'center', justifyContent: 'center' }}>
+                        {isExcluded && <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>✓</Text>}
+                      </View>
                     </TouchableOpacity>
                   );
                 }}
-                ListEmptyComponent={<Text style={{color: C.textMuted, textAlign: 'center', marginTop: 20}}>No contacts synced yet. Make sure WhatsApp is connected.</Text>}
+                ListEmptyComponent={<Text style={{color: C.textMuted, textAlign: 'center', marginTop: 20}}>No contacts found.</Text>}
               />
 
-              <TouchableOpacity style={s.saveBtn} onPress={() => setContactsModalVisible(false)} style={{ marginTop: 15, backgroundColor: C.accent, paddingVertical: 14, borderRadius: 12, alignItems: 'center' }}>
+              <TouchableOpacity style={{ marginTop: 15, backgroundColor: C.accent, paddingVertical: 14, borderRadius: 12, alignItems: 'center' }} onPress={() => {
+                setContactsModalVisible(false);
+                setContactSearch('');
+                // Immediately send updated config to backend
+                sendConfig(socketRef, nvidiaApiKey, groqApiKey, systemPrompt, excludedNumbers, relationships);
+              }}>
                 <Text style={s.saveBtnText}>Done</Text>
               </TouchableOpacity>
             </View>
@@ -804,6 +823,17 @@ const s = StyleSheet.create({
   // Logs
   logsContainer: { flex: 1, backgroundColor: '#0d0f18', padding: 12 },
   logText: { color: C.green, fontFamily: 'monospace', fontSize: 12, marginBottom: 3, lineHeight: 17 },
+
+  // Contacts Button & Modal
+  contactsBtn: { backgroundColor: C.cardBorder, paddingHorizontal: 15, paddingVertical: 14, borderRadius: 10, marginLeft: 10 },
+  contactsBtnText: { color: C.accent, fontWeight: '700', fontSize: 14 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding: 20 },
+  modalContent: { backgroundColor: C.card, borderRadius: 16, padding: 20, maxHeight: '80%', borderWidth: 1, borderColor: C.cardBorder },
+  modalTitle: { fontSize: 20, fontWeight: 'bold', color: C.text, marginBottom: 5 },
+  modalSubtitle: { fontSize: 14, color: C.textMuted, marginBottom: 15 },
+  contactItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#2A2A2A' },
+  contactName: { color: C.text, fontSize: 16, fontWeight: '600' },
+  contactNum: { color: C.textMuted, fontSize: 13, marginTop: 2 },
 });
 
 export default function App() {
