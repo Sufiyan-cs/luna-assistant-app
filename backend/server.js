@@ -193,7 +193,7 @@ async function connectToWhatsApp() {
                 
                 const jid = msg.key.remoteJid;
                 if (!jid) return;
-                const num = jid.split('@')[0];
+                const num = jid.split('@')[0].split(':')[0];
 
                 // Cache the pushName for this contact
                 if (msg.pushName) contactNames[jid] = msg.pushName;
