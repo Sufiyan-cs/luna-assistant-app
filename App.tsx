@@ -319,7 +319,7 @@ function LunaApp() {
 
   const sendConfig = (socket: Socket | null, key: string, groqKey: string, prompt: string, excluded: string, rels: string) => {
     if (!socket || !socket.connected) return;
-    const excludeArr = excluded.split(',').map(n => n.trim()).filter(n => n);
+    const excludeArr = excluded.split(',').map(n => n.replace(/\D/g, '')).filter(n => n);
     socket.emit('config', {
       nvidiaApiKey: key,
       groqApiKey: groqKey,
