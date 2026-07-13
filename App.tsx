@@ -12,6 +12,8 @@ import {
   Platform,
   FlatList,
   Animated,
+  Modal,
+  Switch
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import QRCode from 'react-native-qrcode-svg';
@@ -141,6 +143,8 @@ function LunaApp() {
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_PROMPT);
   const [excludedNumbers, setExcludedNumbers] = useState('');
   const [relationships, setRelationships] = useState('');
+  const [contacts, setContacts] = useState<{[jid: string]: string}>({});
+  const [isContactsModalVisible, setContactsModalVisible] = useState(false);
   
   const scrollViewRef = useRef<ScrollView>(null);
   const chatScrollRef = useRef<ScrollView>(null);
@@ -269,6 +273,11 @@ function LunaApp() {
     socket.on('backend_ready', () => {
       addLog('Backend is ready.');
       sendConfig(socket, nvidiaApiKey, groqApiKey, systemPrompt, excludedNumbers, relationships);
+      socket.emit('get_contacts');
+    });
+
+    socket.on('contacts_list', (data) => {
+      setContacts(data || {});
     });
 
     socket.on('log', (msg) => {
@@ -615,7 +624,12 @@ function LunaApp() {
             
             <Text style={s.label}>Excluded Contacts</Text>
             <Text style={s.labelHint}>Numbers to never reply to (comma separated)</Text>
-            <TextInput style={s.input} value={excludedNumbers} onChangeText={setExcludedNumbers} placeholder="919876543210, 918765432109" placeholderTextColor={C.textMuted} keyboardType="phone-pad" />
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 15 }}>
+              <TextInput style={[s.input, { flex: 1, marginBottom: 0 }]} value={excludedNumbers} onChangeText={setExcludedNumbers} placeholder="919876543210, 918765432109" placeholderTextColor={C.textMuted} keyboardType="phone-pad" />
+              <TouchableOpacity style={s.contactsBtn} onPress={() => setContactsModalVisible(true)}>
+                <Text style={s.contactsBtnText}>👥 Select</Text>
+              </TouchableOpacity>
+            </View>
             
             <Text style={s.label}>System Prompt</Text>
             <Text style={s.labelHint}>Luna's personality and behavior rules</Text>
@@ -635,6 +649,54 @@ function LunaApp() {
             ))}
           </ScrollView>
         )}
+
+        {/* ====== CONTACTS MODAL ====== */}
+        <Modal visible={isContactsModalVisible} animationType="slide" transparent={true}>
+          <View style={s.modalOverlay}>
+            <View style={s.modalContent}>
+              <Text style={s.modalTitle}>Select Contacts to Exclude</Text>
+              <Text style={s.modalSubtitle}>These contacts will be ignored by Luna.</Text>
+              
+              <FlatList
+                data={Object.entries(contacts)}
+                keyExtractor={([jid]) => jid}
+                renderItem={({ item: [jid, name] }) => {
+                  const num = jid.split('@')[0].split(':')[0];
+                  const isExcluded = excludedNumbers.split(',').map(n => n.replace(/\D/g, '')).includes(num);
+                  return (
+                    <TouchableOpacity style={s.contactItem} onPress={() => {
+                      let list = excludedNumbers.split(',').map(n => n.replace(/\D/g, '')).filter(n => n);
+                      if (list.includes(num)) {
+                        list = list.filter(n => n !== num);
+                      } else {
+                        list.push(num);
+                      }
+                      setExcludedNumbers(list.join(', '));
+                    }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.contactName}>{name}</Text>
+                        <Text style={s.contactNum}>+{num}</Text>
+                      </View>
+                      <Switch 
+                        value={isExcluded} 
+                        onValueChange={() => {}} 
+                        pointerEvents="none" 
+                        trackColor={{ false: C.cardBorder, true: C.accent }}
+                        thumbColor={isExcluded ? '#fff' : '#888'}
+                      />
+                    </TouchableOpacity>
+                  );
+                }}
+                ListEmptyComponent={<Text style={{color: C.textMuted, textAlign: 'center', marginTop: 20}}>No contacts synced yet. Make sure WhatsApp is connected.</Text>}
+              />
+
+              <TouchableOpacity style={s.saveBtn} onPress={() => setContactsModalVisible(false)} style={{ marginTop: 15, backgroundColor: C.accent, paddingVertical: 14, borderRadius: 12, alignItems: 'center' }}>
+                <Text style={s.saveBtnText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

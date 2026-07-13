@@ -435,6 +435,11 @@ io.on('connection', (socket) => {
         io.emit('activity', { type: 'system', title: 'System', message: 'Bot resumed — Luna is back online.', time: new Date().toLocaleTimeString() });
     });
 
+    socket.on('get_contacts', () => {
+        // Send the synced contacts back to the app for the UI
+        socket.emit('contacts_list', savedContacts);
+    });
+
     // Chat with Luna directly from the app
     socket.on('luna_chat', async (data) => {
         if (!openai) {
