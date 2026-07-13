@@ -394,7 +394,7 @@ io.on('connection', (socket) => {
         if (data) {
             config = {
                 systemPrompt: data.systemPrompt || config.systemPrompt,
-                excludedNumbers: data.excludedNumbers || config.excludedNumbers,
+                excludedNumbers: Array.isArray(data.excludedNumbers) ? data.excludedNumbers.map(n => n.toString().replace(/\D/g, '')) : config.excludedNumbers,
                 nvidiaApiKey: data.nvidiaApiKey || config.nvidiaApiKey,
                 groqApiKey: data.groqApiKey || config.groqApiKey,
                 isPaused: data.isPaused !== undefined ? data.isPaused : config.isPaused,
