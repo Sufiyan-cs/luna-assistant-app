@@ -14,7 +14,7 @@ interface CallScreenProps {
   reason?: string;
 }
 
-export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', reason }: CallScreenProps) {
+export default function CallScreen({ socket, onEndCall, callerName = 'Idris', reason }: CallScreenProps) {
   const [callState, setCallState] = useState<'incoming' | 'active'>('incoming');
   const [status, setStatus] = useState('Incoming Call...');
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -94,8 +94,8 @@ export default function CallScreen({ socket, onEndCall, callerName = 'Sufiyan', 
       if (granted) {
         setStatus('Tap to speak');
         const greet = reason
-          ? `Hi Sufiyan, I am calling about ${reason}. How can I help?`
-          : `Hi Sufiyan, I am Luna. How can I help you?`;
+          ? `Hi Idris, I am calling about ${reason}. How can I help?`
+          : `Hi Idris, I am Luna. How can I help you?`;
         Tts.speak(greet);
       } else {
         setStatus('Microphone permission denied');
