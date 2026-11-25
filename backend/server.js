@@ -114,7 +114,7 @@ async function connectToWhatsApp() {
     if (sock) return; // Prevent multiple connections
     
     try {
-        const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+        const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
         const pino = require('pino');
 
         if (!fs.existsSync(authFolder)) {
@@ -123,11 +123,22 @@ async function connectToWhatsApp() {
         
         const authState = await useMultiFileAuthState(authFolder);
         
+        // Dynamically fetch the latest WhatsApp Web client version to prevent code 405 (client_too_old) errors
+        let version;
+        try {
+            const versionInfo = await fetchLatestBaileysVersion();
+            version = versionInfo.version;
+            log(`Using WhatsApp Web v${version.join('.')}`);
+        } catch (vErr) {
+            log(`Could not fetch latest WA version, using fallback: ${vErr.message}`);
+        }
+
         sock = makeWASocket({
+            version,
             auth: authState.state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: ['Luna Assistant', 'Chrome', '1.0.0'],
+            browser: Browsers.ubuntu('Chrome'),
         });
         
         sock.ev.on('creds.update', authState.saveCreds);
@@ -158,11 +169,15 @@ async function connectToWhatsApp() {
                     log('Disconnected (code: ' + (code || '?') + ')');
                     io.emit('status', 'disconnected');
                     
-                    if (code === DisconnectReason.loggedOut || code === 440) {
-                        log(code === 440 ? 'Connection replaced — clearing session for fresh QR...' : 'Logged out — clearing session...');
+                    if (code === DisconnectReason.loggedOut || code === 440 || code === 405) {
+                        log(code === 440 ? 'Connection replaced — clearing session for fresh QR...' : code === 405 ? 'Session / client outdated (405) — clearing session for fresh QR...' : 'Logged out — clearing session...');
                         io.emit('status', 'logged_out');
                         sock = null;
                         try { fs.rmSync(authFolder, { recursive: true, force: true }); } catch(_) {}
+                        // Automatically re-trigger connection to generate a fresh QR code for the app
+                        setTimeout(() => {
+                            connectToWhatsApp();
+                        }, 2000);
                     } else {
                         log('Reconnecting in 5s...');
                         setTimeout(() => {
