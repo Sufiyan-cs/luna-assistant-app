@@ -316,15 +316,21 @@ async function connectToWhatsApp() {
                     
                     try { await sock.sendPresenceUpdate('composing', jid); } catch(_) {}
                     
-                    const completion = await openai.chat.completions.create({
-                        model: 'meta/llama-3.1-70b-instruct',
-                        messages: chatHistories[jid],
-                        temperature: 0.1,
-                        max_tokens: 1024,
-                        response_format: { type: "json_object" },
-                    });
+                    let completion;
+                    try {
+                        completion = await openai.chat.completions.create({
+                            model: 'nvidia/nemotron-3.5-super-vl-120b-a12b',
+                            messages: chatHistories[jid],
+                            temperature: 0.1,
+                            max_tokens: 1024,
+                            response_format: { type: "json_object" },
+                        });
+                    } catch (apiErr) {
+                        log('LLM API Error: ' + apiErr.message);
+                        return;
+                    }
                     
-                    const rawReply = completion.choices[0].message.content.trim();
+                    const rawReply = (completion.choices?.[0]?.message?.content || '').trim();
                     
                     let decision;
                     try {
@@ -524,13 +530,13 @@ Rules for sending:
 
         try {
             const completion = await openai.chat.completions.create({
-                model: 'meta/llama-3.3-70b-instruct',
+                model: 'nvidia/nemotron-3.5-super-vl-120b-a12b',
                 messages: chatHistories['_luna_direct'],
                 temperature: 0.5,
-                max_tokens: 500,
+                max_tokens: 1024,
             });
 
-            let reply = completion.choices[0].message.content.trim();
+            let reply = (completion.choices?.[0]?.message?.content || '').trim();
 
             // Robust parsing: try multiple patterns to catch LLM formatting variations
             let sendCmd = null;
@@ -616,7 +622,7 @@ Rules for sending:
                 replyText = llamaData.choices[0].message.content;
             } else if (openai) {
                 const completion = await openai.chat.completions.create({
-                    model: 'meta/llama-3.3-70b-instruct',
+                    model: 'nvidia/nemotron-3.5-super-vl-120b-a12b',
                     messages: [
                         { role: 'system', content: 'You are Luna on a live voice call. Reply in 1-2 short, natural sentences. No emojis.' },
                         { role: 'user', content: userText }
@@ -624,7 +630,7 @@ Rules for sending:
                     max_tokens: 120,
                     temperature: 0.6,
                 });
-                replyText = completion.choices[0].message.content.trim();
+                replyText = (completion.choices?.[0]?.message?.content || '').trim();
             } else {
                 replyText = 'Please set an API key in Settings first.';
             }
